@@ -6,7 +6,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
-import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn, migrateShiftPeriodColumns } from './database.js';
+import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn, migrateShiftPeriodColumns, toDbDateTime } from './database.js';
 import * as smsGw from './smsGateway.service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -383,7 +383,7 @@ app.post('/api/sms/messages', async (req, res) => {
   await execute(`
     INSERT INTO sms_messages (id, title, body, captain_id, scheduled_at, repeat_type)
     VALUES (?, ?, ?, ?, ?, ?)
-  `, [id, title, body, captain_id || null, scheduled_at, repeat_type || 'once']);
+  `, [id, title, body, captain_id || null, toDbDateTime(scheduled_at), repeat_type || 'once']);
 
   res.status(201).json(await queryOne('SELECT * FROM sms_messages WHERE id = ?', [id]));
 });
@@ -400,7 +400,7 @@ app.put('/api/sms/messages/:id', async (req, res) => {
     title ?? existing.title,
     body ?? existing.body,
     captain_id !== undefined ? (captain_id || null) : existing.captain_id,
-    scheduled_at ?? existing.scheduled_at,
+    scheduled_at !== undefined ? toDbDateTime(scheduled_at) : toDbDateTime(existing.scheduled_at),
     repeat_type ?? existing.repeat_type,
     is_active ?? existing.is_active,
     req.params.id

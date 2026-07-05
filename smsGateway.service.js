@@ -1,4 +1,4 @@
-import { queryAll, queryOne, execute, isMySQL, nowExpr } from './database.js';
+import { queryAll, queryOne, execute, isMySQL, nowExpr, toTimestamp } from './database.js';
 import { v4 as uuid } from 'uuid';
 
 const GATEWAY_ONLINE_SECONDS = 90;
@@ -32,12 +32,6 @@ export async function touchGatewayHeartbeat() {
   }
 }
 
-function toTimestamp(value) {
-  if (!value) return NaN;
-  if (value instanceof Date) return value.getTime();
-  const raw = String(value);
-  return new Date(raw.includes('T') ? raw : raw.replace(' ', 'T')).getTime();
-}
 
 export async function isGatewayOnline() {
   const row = await queryOne('SELECT last_seen_at FROM sms_gateway_heartbeat WHERE id = 1');

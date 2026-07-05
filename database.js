@@ -169,6 +169,24 @@ export async function initDb() {
   console.log('✅ SQLite connected —', dbPath);
 }
 
+/** تحويل ISO/Date إلى صيغة MySQL: YYYY-MM-DD HH:MM:SS */
+export function toDbDateTime(value) {
+  if (!value) return value;
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) {
+    return String(value).replace('T', ' ').replace(/\.\d{3}Z?$/, '').replace(/Z$/, '');
+  }
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
+}
+
+export function toTimestamp(value) {
+  if (!value) return NaN;
+  if (value instanceof Date) return value.getTime();
+  const raw = String(value);
+  return new Date(raw.includes('T') ? raw : raw.replace(' ', 'T')).getTime();
+}
+
 export async function queryAll(sql, params = []) {
   if (isMySQL) {
     const [rows] = await pool.execute(sql, params);
