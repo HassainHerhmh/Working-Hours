@@ -33,6 +33,9 @@ const SCHEMA_SQLITE = `
     day_of_week INTEGER NOT NULL CHECK(day_of_week BETWEEN 0 AND 6),
     start_time TEXT NOT NULL,
     end_time TEXT NOT NULL,
+    period1_end TEXT DEFAULT '12:00',
+    break_hours REAL DEFAULT 2,
+    period2_start TEXT DEFAULT '14:00',
     is_active INTEGER DEFAULT 1,
     UNIQUE(captain_id, day_of_week)
   );
@@ -195,6 +198,39 @@ export async function migrateCaptainPasswordColumn() {
   if (!cols.some(c => c.name === 'password_hash')) {
     sqlite.exec('ALTER TABLE captains ADD COLUMN password_hash TEXT DEFAULT ""');
   }
+}
+
+export async function migrateShiftPeriodColumns() {
+  const addColumn = async (sqliteSql, mysqlSql) => {
+    if (isMySQL) {
+      try { await execute(mysqlSql); } catch (_) { /* column may exist */ }
+    } else {
+      try { sqlite.exec(sqliteSql); } catch (_) { /* column may exist */ }
+    }
+  };
+
+  await addColumn(
+    "ALTER TABLE shifts ADD COLUMN period1_end TEXT DEFAULT '12:00'",
+    "ALTER TABLE shifts ADD COLUMN period1_end VARCHAR(10) DEFAULT '12:00'"
+  );
+  await addColumn(
+    'ALTER TABLE shifts ADD COLUMN break_hours REAL DEFAULT 2',
+    'ALTER TABLE shifts ADD COLUMN break_hours DECIMAL(4,1) DEFAULT 2'
+  );
+  await addColumn(
+    "ALTER TABLE shifts ADD COLUMN period2_start TEXT DEFAULT '14:00'",
+    "ALTER TABLE shifts ADD COLUMN period2_start VARCHAR(10) DEFAULT '14:00'"
+  );
+
+  await execute(`
+    UPDATE shifts SET
+      period1_end = COALESCE(NULLIF(period1_end, ''), '12:00'),
+      break_hours = COALESCE(break_hours, 2),
+      period2_start = COALESCE(NULLIF(period2_start, ''), '14:00')
+    WHERE period1_end IS NULL OR period1_end = ''
+       OR break_hours IS NULL
+       OR period2_start IS NULL OR period2_start = ''
+  `);
 }
 
 export async function migrateCaptainUsernameColumn() {

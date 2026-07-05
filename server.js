@@ -6,7 +6,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
-import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn } from './database.js';
+import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn, migrateShiftPeriodColumns } from './database.js';
 import * as smsGw from './smsGateway.service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -37,6 +37,25 @@ function requireGatewayAuth(req, res, next) {
 
 const DAYS = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
 
+function enrichShift(shift) {
+  if (!shift) return null;
+  const period1_start = shift.start_time;
+  const period1_end = shift.period1_end || '12:00';
+  const break_hours = Number(shift.break_hours ?? 2);
+  const period2_start = shift.period2_start || '14:00';
+  const period2_end = shift.end_time;
+  const breakLabel = Number.isInteger(break_hours) ? `${break_hours}` : String(break_hours);
+  return {
+    ...shift,
+    period1_start,
+    period1_end,
+    break_hours,
+    period2_start,
+    period2_end,
+    schedule_label: `${period1_start}–${period1_end} | راحة ${breakLabel}س | ${period2_start}–${period2_end}`
+  };
+}
+
 function isUniqueError(e) {
   return e.message?.includes('UNIQUE') || e.code === 'ER_DUP_ENTRY' || e.errno === 1062;
 }
@@ -64,6 +83,7 @@ async function ensureCaptainPasswords() {
 async function seedIfEmpty() {
   await migrateCaptainPasswordColumn();
   await migrateCaptainUsernameColumn();
+  await migrateShiftPeriodColumns();
   const captainCount = Number((await queryOne('SELECT COUNT(*) as c FROM captains')).c);
   if (captainCount === 0) {
     const captains = [
@@ -81,8 +101,8 @@ async function seedIfEmpty() {
       );
       for (let day = 0; day <= 4; day++) {
         await execute(
-          'INSERT INTO shifts (id, captain_id, day_of_week, start_time, end_time) VALUES (?, ?, ?, ?, ?)',
-          [uuid(), id, day, '08:00', '17:00']
+          'INSERT INTO shifts (id, captain_id, day_of_week, start_time, end_time, period1_end, break_hours, period2_start, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [uuid(), id, day, '08:00', '17:00', '12:00', 2, '14:00', 1]
         );
       }
     }
@@ -284,7 +304,7 @@ app.get('/api/shifts', async (req, res) => {
       ORDER BY c.name, s.day_of_week
     `);
   }
-  res.json(shifts.map(s => ({ ...s, day_name: DAYS[s.day_of_week] })));
+  res.json(shifts.map(s => enrichShift({ ...s, day_name: DAYS[s.day_of_week] })));
 });
 
 app.put('/api/shifts/captain/:captainId', async (req, res) => {
@@ -297,15 +317,20 @@ app.put('/api/shifts/captain/:captainId', async (req, res) => {
   await execute('DELETE FROM shifts WHERE captain_id = ?', [req.params.captainId]);
   for (const s of shifts) {
     if (s.is_active !== false) {
+      const period1_start = s.period1_start || s.start_time || '08:00';
+      const period1_end = s.period1_end || '12:00';
+      const break_hours = Number(s.break_hours ?? 2);
+      const period2_start = s.period2_start || '14:00';
+      const period2_end = s.period2_end || s.end_time || '17:00';
       await execute(
-        'INSERT INTO shifts (id, captain_id, day_of_week, start_time, end_time, is_active) VALUES (?, ?, ?, ?, ?, ?)',
-        [uuid(), req.params.captainId, s.day_of_week, s.start_time, s.end_time, 1]
+        'INSERT INTO shifts (id, captain_id, day_of_week, start_time, end_time, period1_end, break_hours, period2_start, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [uuid(), req.params.captainId, s.day_of_week, period1_start, period2_end, period1_end, break_hours, period2_start, 1]
       );
     }
   }
 
   const result = await queryAll('SELECT * FROM shifts WHERE captain_id = ? ORDER BY day_of_week', [req.params.captainId]);
-  res.json(result.map(s => ({ ...s, day_name: DAYS[s.day_of_week] })));
+  res.json(result.map(s => enrichShift({ ...s, day_name: DAYS[s.day_of_week] })));
 });
 
 // ─── SMS Messages ───────────────────────────────────────────
@@ -481,7 +506,7 @@ app.get('/api/captain-auth/me/:id', async (req, res) => {
   if (!captain) return res.status(404).json({ error: 'غير موجود' });
 
   const shifts = (await queryAll('SELECT * FROM shifts WHERE captain_id = ? AND is_active = 1 ORDER BY day_of_week', [captain.id]))
-    .map(s => ({ ...s, day_name: DAYS[s.day_of_week] }));
+    .map(s => enrichShift({ ...s, day_name: DAYS[s.day_of_week] }));
 
   const today = new Date().getDay();
   const todayShift = shifts.find(s => s.day_of_week === today);
