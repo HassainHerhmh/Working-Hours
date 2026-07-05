@@ -93,7 +93,7 @@ async function seedIfEmpty() {
     await execute(`
       INSERT INTO users (id, name, email, phone, role, status, password_hash)
       VALUES (?, ?, ?, ?, ?, ?, ?)
-    `, [uuid(), 'المدير', 'admin@go.com', '967770000000', 'admin', 'active', hash]);
+    `, [uuid(), 'المدير', 'admin@ebham.com', '967770000000', 'admin', 'active', hash]);
   }
   await ensureCaptainPasswords();
 }
@@ -416,6 +416,30 @@ app.get('/api/sms/simulator/inbox/:captainId', async (req, res) => {
     SELECT * FROM sms_log WHERE captain_id = ? ORDER BY sent_at DESC LIMIT 30
   `, [req.params.captainId]);
   res.json(logs);
+});
+
+// ─── Platform Admin Login ───────────────────────────────────
+
+app.post('/api/platform-auth/login', async (req, res) => {
+  const { username, password } = req.body;
+  if (!username || !password) {
+    return res.status(400).json({ error: 'اسم المستخدم وكلمة المرور مطلوبة' });
+  }
+  const key = String(username).trim();
+  const user = await queryOne(
+    'SELECT * FROM users WHERE email = ? OR phone = ? OR name = ?',
+    [key, key, key]
+  );
+  if (!user || !user.password_hash) {
+    return res.status(401).json({ error: 'اسم المستخدم أو كلمة المرور غير صحيحة' });
+  }
+  if (user.status !== 'active') {
+    return res.status(403).json({ error: 'الحساب معطّل — تواصل مع المدير' });
+  }
+  if (!bcrypt.compareSync(password, user.password_hash)) {
+    return res.status(401).json({ error: 'اسم المستخدم أو كلمة المرور غير صحيحة' });
+  }
+  res.json({ user: sanitizeUser(user), token: user.id });
 });
 
 // ─── Captain App Login (simple phone lookup) ────────────────
