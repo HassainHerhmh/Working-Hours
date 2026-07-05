@@ -427,8 +427,8 @@ app.post('/api/platform-auth/login', async (req, res) => {
   }
   const key = String(username).trim();
   const user = await queryOne(
-    'SELECT * FROM users WHERE email = ? OR phone = ? OR name = ?',
-    [key, key, key]
+    'SELECT * FROM users WHERE email = ? OR phone = ?',
+    [key, key]
   );
   if (!user || !user.password_hash) {
     return res.status(401).json({ error: 'اسم المستخدم أو كلمة المرور غير صحيحة' });
