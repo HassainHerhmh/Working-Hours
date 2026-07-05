@@ -423,7 +423,7 @@ app.get('/api/sms/simulator/inbox/:captainId', async (req, res) => {
 app.post('/api/platform-auth/login', async (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) {
-    return res.status(400).json({ error: 'اسم المستخدم وكلمة المرور مطلوبة' });
+    return res.status(400).json({ error: 'البريد الإلكتروني أو رقم الهاتف وكلمة المرور مطلوبة' });
   }
   const key = String(username).trim();
   const user = await queryOne(
@@ -431,13 +431,13 @@ app.post('/api/platform-auth/login', async (req, res) => {
     [key, key]
   );
   if (!user || !user.password_hash) {
-    return res.status(401).json({ error: 'اسم المستخدم أو كلمة المرور غير صحيحة' });
+    return res.status(401).json({ error: 'البريد الإلكتروني أو رقم الهاتف أو كلمة المرور غير صحيحة' });
   }
   if (user.status !== 'active') {
     return res.status(403).json({ error: 'الحساب معطّل — تواصل مع المدير' });
   }
   if (!bcrypt.compareSync(password, user.password_hash)) {
-    return res.status(401).json({ error: 'اسم المستخدم أو كلمة المرور غير صحيحة' });
+    return res.status(401).json({ error: 'البريد الإلكتروني أو رقم الهاتف أو كلمة المرور غير صحيحة' });
   }
   res.json({ user: sanitizeUser(user), token: user.id });
 });
@@ -455,10 +455,10 @@ app.post('/api/captain-auth/login', async (req, res) => {
     [key, key]
   );
   if (!captain || !captain.password_hash) {
-    return res.status(401).json({ error: 'اسم المستخدم أو كلمة المرور غير صحيحة' });
+    return res.status(401).json({ error: 'البريد الإلكتروني أو رقم الهاتف أو كلمة المرور غير صحيحة' });
   }
   if (!bcrypt.compareSync(password, captain.password_hash)) {
-    return res.status(401).json({ error: 'اسم المستخدم أو كلمة المرور غير صحيحة' });
+    return res.status(401).json({ error: 'البريد الإلكتروني أو رقم الهاتف أو كلمة المرور غير صحيحة' });
   }
   res.json({ captain: sanitizeCaptain(captain), token: captain.id });
 });
