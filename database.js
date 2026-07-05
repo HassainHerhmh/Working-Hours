@@ -8,6 +8,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export const isMySQL = Boolean(
   process.env.MYSQL_URL ||
+  process.env.MYSQL_PUBLIC_URL ||
   process.env.DATABASE_URL ||
   process.env.MYSQLHOST
 );
@@ -88,9 +89,7 @@ const SCHEMA_SQLITE = `
 
 const SCHEMA_MYSQL = fs.readFileSync(path.join(__dirname, 'schema.mysql.sql'), 'utf8');
 
-function getMySQLConfig() {
-  if (process.env.MYSQL_URL) return process.env.MYSQL_URL;
-  if (process.env.DATABASE_URL?.startsWith('mysql')) return process.env.DATABASE_URL;
+function getMySQLHostConfig() {
   return {
     host: process.env.MYSQLHOST || process.env.MYSQL_HOST || 'localhost',
     port: Number(process.env.MYSQLPORT || process.env.MYSQL_PORT || 3306),
@@ -103,14 +102,56 @@ function getMySQLConfig() {
   };
 }
 
+function getMySQLConnectionCandidates() {
+  const candidates = [];
+  const add = (label, config) => candidates.push({ label, config });
+
+  if (process.env.MYSQL_URL) add('MYSQL_URL', process.env.MYSQL_URL);
+  if (process.env.DATABASE_URL?.startsWith('mysql')) add('DATABASE_URL', process.env.DATABASE_URL);
+  // Public TCP proxy — works when internal DNS (mysql.railway.internal) is unreachable
+  if (process.env.MYSQL_PUBLIC_URL) add('MYSQL_PUBLIC_URL', process.env.MYSQL_PUBLIC_URL);
+  if (process.env.MYSQLHOST || process.env.MYSQL_HOST) add('MYSQLHOST', getMySQLHostConfig());
+
+  return candidates;
+}
+
+async function connectMySQL() {
+  const candidates = getMySQLConnectionCandidates();
+  if (!candidates.length) {
+    throw new Error('MySQL env vars missing. Link MySQL service to Backend in Railway → Variables → Add Reference.');
+  }
+
+  const errors = [];
+  for (const { label, config } of candidates) {
+    try {
+      const nextPool = mysql.createPool(config);
+      await nextPool.execute('SELECT 1');
+      console.log(`✅ MySQL connected via ${label}`);
+      return nextPool;
+    } catch (err) {
+      errors.push(`${label}: ${err.message}`);
+      if (err.code === 'ENOTFOUND' || err.code === 'ECONNREFUSED' || err.code === 'ETIMEDOUT') {
+        console.warn(`⚠️ MySQL ${label} failed (${err.code}), trying next...`);
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw new Error(
+    `Could not connect to MySQL. ${errors.join(' | ')}. ` +
+    'In Railway: open Backend → Variables → Add Reference → select MySQL service, then redeploy.'
+  );
+}
+
 export async function initDb() {
   if (isMySQL) {
-    pool = mysql.createPool(getMySQLConfig());
+    pool = await connectMySQL();
     const statements = SCHEMA_MYSQL.split(';').map(s => s.trim()).filter(Boolean);
     for (const stmt of statements) {
       await pool.execute(stmt);
     }
-    console.log('✅ MySQL connected — tables ready');
+    console.log('✅ MySQL tables ready');
     return;
   }
 
