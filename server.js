@@ -6,7 +6,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
-import db from './db.js';
+import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn } from './database.js';
 import * as smsGw from './smsGateway.service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -37,11 +37,8 @@ function requireGatewayAuth(req, res, next) {
 
 const DAYS = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
 
-function migrateDb() {
-  const cols = db.prepare('PRAGMA table_info(captains)').all();
-  if (!cols.some(c => c.name === 'password_hash')) {
-    db.exec('ALTER TABLE captains ADD COLUMN password_hash TEXT DEFAULT ""');
-  }
+function isUniqueError(e) {
+  return e.message?.includes('UNIQUE') || e.code === 'ER_DUP_ENTRY' || e.errno === 1062;
 }
 
 function sanitizeCaptain(captain) {
@@ -50,17 +47,23 @@ function sanitizeCaptain(captain) {
   return safe;
 }
 
-function ensureCaptainPasswords() {
-  const rows = db.prepare("SELECT id FROM captains WHERE password_hash IS NULL OR password_hash = ''").all();
-  if (!rows.length) return;
-  const hash = bcrypt.hashSync('123456', 10);
-  const update = db.prepare('UPDATE captains SET password_hash = ? WHERE id = ?');
-  for (const row of rows) update.run(hash, row.id);
+function sanitizeUser(user) {
+  const { password_hash, ...safe } = user;
+  return safe;
 }
 
-function seedIfEmpty() {
-  migrateDb();
-  const captainCount = db.prepare('SELECT COUNT(*) as c FROM captains').get().c;
+async function ensureCaptainPasswords() {
+  const rows = await queryAll("SELECT id FROM captains WHERE password_hash IS NULL OR password_hash = ''");
+  if (!rows.length) return;
+  const hash = bcrypt.hashSync('123456', 10);
+  for (const row of rows) {
+    await execute('UPDATE captains SET password_hash = ? WHERE id = ?', [hash, row.id]);
+  }
+}
+
+async function seedIfEmpty() {
+  await migrateCaptainPasswordColumn();
+  const captainCount = Number((await queryOne('SELECT COUNT(*) as c FROM captains')).c);
   if (captainCount === 0) {
     const captains = [
       { name: 'أحمد محمد', phone: '967771234567', captain_number: 'C001' },
@@ -68,50 +71,41 @@ function seedIfEmpty() {
       { name: 'سعد يوسف', phone: '967773456789', captain_number: 'C003' }
     ];
     const defaultHash = bcrypt.hashSync('123456', 10);
-    const insertCaptain = db.prepare(
-      'INSERT INTO captains (id, name, phone, captain_number, password_hash) VALUES (?, ?, ?, ?, ?)'
-    );
-    const insertShift = db.prepare(
-      'INSERT INTO shifts (id, captain_id, day_of_week, start_time, end_time) VALUES (?, ?, ?, ?, ?)'
-    );
 
     for (const c of captains) {
       const id = uuid();
-      insertCaptain.run(id, c.name, c.phone, c.captain_number, defaultHash);
+      await execute(
+        'INSERT INTO captains (id, name, phone, captain_number, password_hash) VALUES (?, ?, ?, ?, ?)',
+        [id, c.name, c.phone, c.captain_number, defaultHash]
+      );
       for (let day = 0; day <= 4; day++) {
-        insertShift.run(uuid(), id, day, '08:00', '17:00');
+        await execute(
+          'INSERT INTO shifts (id, captain_id, day_of_week, start_time, end_time) VALUES (?, ?, ?, ?, ?)',
+          [uuid(), id, day, '08:00', '17:00']
+        );
       }
     }
   }
 
-  const userCount = db.prepare('SELECT COUNT(*) as c FROM users').get().c;
+  const userCount = Number((await queryOne('SELECT COUNT(*) as c FROM users')).c);
   if (userCount === 0) {
     const hash = bcrypt.hashSync('admin123', 10);
-    db.prepare(`
+    await execute(`
       INSERT INTO users (id, name, email, phone, role, status, password_hash)
       VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(uuid(), 'المدير', 'admin@go.com', '967770000000', 'admin', 'active', hash);
+    `, [uuid(), 'المدير', 'admin@go.com', '967770000000', 'admin', 'active', hash]);
   }
-  ensureCaptainPasswords();
-}
-
-migrateDb();
-seedIfEmpty();
-ensureCaptainPasswords();
-
-function sanitizeUser(user) {
-  const { password_hash, ...safe } = user;
-  return safe;
+  await ensureCaptainPasswords();
 }
 
 // ─── Users ──────────────────────────────────────────────────
 
-app.get('/api/users', (_, res) => {
-  const users = db.prepare('SELECT * FROM users ORDER BY created_at DESC').all();
+app.get('/api/users', async (_, res) => {
+  const users = await queryAll('SELECT * FROM users ORDER BY created_at DESC');
   res.json(users.map(sanitizeUser));
 });
 
-app.post('/api/users', upload.single('photo'), (req, res) => {
+app.post('/api/users', upload.single('photo'), async (req, res) => {
   const { name, email, phone, role, password } = req.body;
   if (!name || !password) {
     return res.status(400).json({ error: 'الاسم وكلمة المرور مطلوبة' });
@@ -120,21 +114,21 @@ app.post('/api/users', upload.single('photo'), (req, res) => {
   const photo = req.file ? `/uploads/${req.file.filename}` : '';
   const hash = bcrypt.hashSync(password, 10);
   try {
-    db.prepare(`
+    await execute(`
       INSERT INTO users (id, name, email, phone, role, photo, password_hash)
       VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(id, name, email || null, phone || null, role || 'employee', photo, hash);
-    res.status(201).json(sanitizeUser(db.prepare('SELECT * FROM users WHERE id = ?').get(id)));
+    `, [id, name, email || null, phone || null, role || 'employee', photo, hash]);
+    res.status(201).json(sanitizeUser(await queryOne('SELECT * FROM users WHERE id = ?', [id])));
   } catch (e) {
-    if (e.message.includes('UNIQUE')) {
+    if (isUniqueError(e)) {
       return res.status(409).json({ error: 'البريد الإلكتروني مستخدم مسبقاً' });
     }
     throw e;
   }
 });
 
-app.put('/api/users/:id', upload.single('photo'), (req, res) => {
-  const existing = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id);
+app.put('/api/users/:id', upload.single('photo'), async (req, res) => {
+  const existing = await queryOne('SELECT * FROM users WHERE id = ?', [req.params.id]);
   if (!existing) return res.status(404).json({ error: 'المستخدم غير موجود' });
 
   const { name, email, phone, role, status, password } = req.body;
@@ -142,10 +136,10 @@ app.put('/api/users/:id', upload.single('photo'), (req, res) => {
   const hash = password ? bcrypt.hashSync(password, 10) : existing.password_hash;
 
   try {
-    db.prepare(`
+    await execute(`
       UPDATE users SET name = ?, email = ?, phone = ?, role = ?, status = ?, photo = ?, password_hash = ?
       WHERE id = ?
-    `).run(
+    `, [
       name ?? existing.name,
       email !== undefined ? (email || null) : existing.email,
       phone !== undefined ? (phone || null) : existing.phone,
@@ -154,55 +148,55 @@ app.put('/api/users/:id', upload.single('photo'), (req, res) => {
       photo,
       hash,
       req.params.id
-    );
-    res.json(sanitizeUser(db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id)));
+    ]);
+    res.json(sanitizeUser(await queryOne('SELECT * FROM users WHERE id = ?', [req.params.id])));
   } catch (e) {
-    if (e.message.includes('UNIQUE')) {
+    if (isUniqueError(e)) {
       return res.status(409).json({ error: 'البريد الإلكتروني مستخدم مسبقاً' });
     }
     throw e;
   }
 });
 
-app.patch('/api/users/:id/status', (req, res) => {
-  const existing = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id);
+app.patch('/api/users/:id/status', async (req, res) => {
+  const existing = await queryOne('SELECT * FROM users WHERE id = ?', [req.params.id]);
   if (!existing) return res.status(404).json({ error: 'المستخدم غير موجود' });
   const status = existing.status === 'active' ? 'inactive' : 'active';
-  db.prepare('UPDATE users SET status = ? WHERE id = ?').run(status, req.params.id);
-  res.json(sanitizeUser(db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id)));
+  await execute('UPDATE users SET status = ? WHERE id = ?', [status, req.params.id]);
+  res.json(sanitizeUser(await queryOne('SELECT * FROM users WHERE id = ?', [req.params.id])));
 });
 
-app.patch('/api/users/:id/reset-password', (req, res) => {
-  const existing = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id);
+app.patch('/api/users/:id/reset-password', async (req, res) => {
+  const existing = await queryOne('SELECT * FROM users WHERE id = ?', [req.params.id]);
   if (!existing) return res.status(404).json({ error: 'المستخدم غير موجود' });
   const { password } = req.body;
   if (!password || String(password).length < 6) {
     return res.status(400).json({ error: 'كلمة المرور يجب أن تكون 6 أحرف على الأقل' });
   }
   const hash = bcrypt.hashSync(password, 10);
-  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hash, req.params.id);
+  await execute('UPDATE users SET password_hash = ? WHERE id = ?', [hash, req.params.id]);
   res.json({ ok: true, message: 'تم إعادة تعيين كلمة المرور' });
 });
 
-app.delete('/api/users/:id', (req, res) => {
-  db.prepare('DELETE FROM users WHERE id = ?').run(req.params.id);
+app.delete('/api/users/:id', async (req, res) => {
+  await execute('DELETE FROM users WHERE id = ?', [req.params.id]);
   res.json({ ok: true });
 });
 
 // ─── Captains ───────────────────────────────────────────────
 
-app.get('/api/captains', (_, res) => {
-  const captains = db.prepare('SELECT * FROM captains ORDER BY created_at DESC').all();
+app.get('/api/captains', async (_, res) => {
+  const captains = await queryAll('SELECT * FROM captains ORDER BY created_at DESC');
   res.json(captains.map(sanitizeCaptain));
 });
 
-app.get('/api/captains/:id', (req, res) => {
-  const captain = db.prepare('SELECT * FROM captains WHERE id = ?').get(req.params.id);
+app.get('/api/captains/:id', async (req, res) => {
+  const captain = await queryOne('SELECT * FROM captains WHERE id = ?', [req.params.id]);
   if (!captain) return res.status(404).json({ error: 'الكابتن غير موجود' });
   res.json(sanitizeCaptain(captain));
 });
 
-app.post('/api/captains', upload.single('photo'), (req, res) => {
+app.post('/api/captains', upload.single('photo'), async (req, res) => {
   const { name, phone, captain_number, password } = req.body;
   if (!name || !phone || !captain_number) {
     return res.status(400).json({ error: 'الاسم والهاتف ورقم الكابتن مطلوبة' });
@@ -211,20 +205,21 @@ app.post('/api/captains', upload.single('photo'), (req, res) => {
   const photo = req.file ? `/uploads/${req.file.filename}` : '';
   const hash = bcrypt.hashSync(password || '123456', 10);
   try {
-    db.prepare(
-      'INSERT INTO captains (id, name, phone, captain_number, photo, password_hash) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run(id, name, phone, captain_number, photo, hash);
-    res.status(201).json(sanitizeCaptain(db.prepare('SELECT * FROM captains WHERE id = ?').get(id)));
+    await execute(
+      'INSERT INTO captains (id, name, phone, captain_number, photo, password_hash) VALUES (?, ?, ?, ?, ?, ?)',
+      [id, name, phone, captain_number, photo, hash]
+    );
+    res.status(201).json(sanitizeCaptain(await queryOne('SELECT * FROM captains WHERE id = ?', [id])));
   } catch (e) {
-    if (e.message.includes('UNIQUE')) {
+    if (isUniqueError(e)) {
       return res.status(409).json({ error: 'رقم الهاتف أو رقم الكابتن مستخدم مسبقاً' });
     }
     throw e;
   }
 });
 
-app.put('/api/captains/:id', upload.single('photo'), (req, res) => {
-  const existing = db.prepare('SELECT * FROM captains WHERE id = ?').get(req.params.id);
+app.put('/api/captains/:id', upload.single('photo'), async (req, res) => {
+  const existing = await queryOne('SELECT * FROM captains WHERE id = ?', [req.params.id]);
   if (!existing) return res.status(404).json({ error: 'الكابتن غير موجود' });
 
   const { name, phone, captain_number, password } = req.body;
@@ -232,113 +227,109 @@ app.put('/api/captains/:id', upload.single('photo'), (req, res) => {
   const hash = password ? bcrypt.hashSync(password, 10) : existing.password_hash;
 
   try {
-    db.prepare(
-      'UPDATE captains SET name = ?, phone = ?, captain_number = ?, photo = ?, password_hash = ? WHERE id = ?'
-    ).run(name || existing.name, phone || existing.phone, captain_number || existing.captain_number, photo, hash, req.params.id);
-    res.json(sanitizeCaptain(db.prepare('SELECT * FROM captains WHERE id = ?').get(req.params.id)));
+    await execute(
+      'UPDATE captains SET name = ?, phone = ?, captain_number = ?, photo = ?, password_hash = ? WHERE id = ?',
+      [name || existing.name, phone || existing.phone, captain_number || existing.captain_number, photo, hash, req.params.id]
+    );
+    res.json(sanitizeCaptain(await queryOne('SELECT * FROM captains WHERE id = ?', [req.params.id])));
   } catch (e) {
-    if (e.message.includes('UNIQUE')) {
+    if (isUniqueError(e)) {
       return res.status(409).json({ error: 'رقم الهاتف أو رقم الكابتن مستخدم مسبقاً' });
     }
     throw e;
   }
 });
 
-app.delete('/api/captains/:id', (req, res) => {
-  db.prepare('DELETE FROM captains WHERE id = ?').run(req.params.id);
+app.delete('/api/captains/:id', async (req, res) => {
+  await execute('DELETE FROM captains WHERE id = ?', [req.params.id]);
   res.json({ ok: true });
 });
 
-app.patch('/api/captains/:id/reset-password', (req, res) => {
-  const existing = db.prepare('SELECT * FROM captains WHERE id = ?').get(req.params.id);
+app.patch('/api/captains/:id/reset-password', async (req, res) => {
+  const existing = await queryOne('SELECT * FROM captains WHERE id = ?', [req.params.id]);
   if (!existing) return res.status(404).json({ error: 'الكابتن غير موجود' });
   const { password } = req.body;
   if (!password || String(password).length < 6) {
     return res.status(400).json({ error: 'كلمة المرور يجب أن تكون 6 أحرف على الأقل' });
   }
   const hash = bcrypt.hashSync(password, 10);
-  db.prepare('UPDATE captains SET password_hash = ? WHERE id = ?').run(hash, req.params.id);
+  await execute('UPDATE captains SET password_hash = ? WHERE id = ?', [hash, req.params.id]);
   res.json({ ok: true, message: 'تم إعادة تعيين كلمة المرور' });
 });
 
 // ─── Shifts ─────────────────────────────────────────────────
 
-app.get('/api/shifts', (req, res) => {
+app.get('/api/shifts', async (req, res) => {
   const { captain_id } = req.query;
   let shifts;
   if (captain_id) {
-    shifts = db.prepare('SELECT * FROM shifts WHERE captain_id = ? ORDER BY day_of_week').all(captain_id);
+    shifts = await queryAll('SELECT * FROM shifts WHERE captain_id = ? ORDER BY day_of_week', [captain_id]);
   } else {
-    shifts = db.prepare(`
+    shifts = await queryAll(`
       SELECT s.*, c.name as captain_name, c.captain_number
       FROM shifts s JOIN captains c ON c.id = s.captain_id
       ORDER BY c.name, s.day_of_week
-    `).all();
+    `);
   }
   res.json(shifts.map(s => ({ ...s, day_name: DAYS[s.day_of_week] })));
 });
 
-app.put('/api/shifts/captain/:captainId', (req, res) => {
+app.put('/api/shifts/captain/:captainId', async (req, res) => {
   const { shifts } = req.body;
   if (!Array.isArray(shifts)) return res.status(400).json({ error: 'بيانات الدوام غير صالحة' });
 
-  const captain = db.prepare('SELECT id FROM captains WHERE id = ?').get(req.params.captainId);
+  const captain = await queryOne('SELECT id FROM captains WHERE id = ?', [req.params.captainId]);
   if (!captain) return res.status(404).json({ error: 'الكابتن غير موجود' });
 
-  const deleteOld = db.prepare('DELETE FROM shifts WHERE captain_id = ?');
-  const insert = db.prepare(
-    'INSERT INTO shifts (id, captain_id, day_of_week, start_time, end_time, is_active) VALUES (?, ?, ?, ?, ?, ?)'
-  );
-
-  const tx = db.transaction(() => {
-    deleteOld.run(req.params.captainId);
-    for (const s of shifts) {
-      if (s.is_active !== false) {
-        insert.run(uuid(), req.params.captainId, s.day_of_week, s.start_time, s.end_time, 1);
-      }
+  await execute('DELETE FROM shifts WHERE captain_id = ?', [req.params.captainId]);
+  for (const s of shifts) {
+    if (s.is_active !== false) {
+      await execute(
+        'INSERT INTO shifts (id, captain_id, day_of_week, start_time, end_time, is_active) VALUES (?, ?, ?, ?, ?, ?)',
+        [uuid(), req.params.captainId, s.day_of_week, s.start_time, s.end_time, 1]
+      );
     }
-  });
-  tx();
+  }
 
-  const result = db.prepare('SELECT * FROM shifts WHERE captain_id = ? ORDER BY day_of_week').all(req.params.captainId);
+  const result = await queryAll('SELECT * FROM shifts WHERE captain_id = ? ORDER BY day_of_week', [req.params.captainId]);
   res.json(result.map(s => ({ ...s, day_name: DAYS[s.day_of_week] })));
 });
 
 // ─── SMS Messages ───────────────────────────────────────────
 
-app.get('/api/sms/messages', (_, res) => {
-  const messages = db.prepare(`
+app.get('/api/sms/messages', async (_, res) => {
+  const messages = await queryAll(`
     SELECT m.*, c.name as captain_name, c.phone as captain_phone
     FROM sms_messages m
     LEFT JOIN captains c ON c.id = m.captain_id
     ORDER BY m.created_at DESC
-  `).all();
+  `);
   res.json(messages);
 });
 
-app.post('/api/sms/messages', (req, res) => {
+app.post('/api/sms/messages', async (req, res) => {
   const { title, body, captain_id, scheduled_at, repeat_type } = req.body;
   if (!title || !body || !scheduled_at) {
     return res.status(400).json({ error: 'العنوان والنص ووقت الإرسال مطلوبة' });
   }
   const id = uuid();
-  db.prepare(`
+  await execute(`
     INSERT INTO sms_messages (id, title, body, captain_id, scheduled_at, repeat_type)
     VALUES (?, ?, ?, ?, ?, ?)
-  `).run(id, title, body, captain_id || null, scheduled_at, repeat_type || 'once');
+  `, [id, title, body, captain_id || null, scheduled_at, repeat_type || 'once']);
 
-  res.status(201).json(db.prepare('SELECT * FROM sms_messages WHERE id = ?').get(id));
+  res.status(201).json(await queryOne('SELECT * FROM sms_messages WHERE id = ?', [id]));
 });
 
-app.put('/api/sms/messages/:id', (req, res) => {
-  const existing = db.prepare('SELECT * FROM sms_messages WHERE id = ?').get(req.params.id);
+app.put('/api/sms/messages/:id', async (req, res) => {
+  const existing = await queryOne('SELECT * FROM sms_messages WHERE id = ?', [req.params.id]);
   if (!existing) return res.status(404).json({ error: 'الرسالة غير موجودة' });
 
   const { title, body, captain_id, scheduled_at, repeat_type, is_active } = req.body;
-  db.prepare(`
+  await execute(`
     UPDATE sms_messages SET title = ?, body = ?, captain_id = ?, scheduled_at = ?,
     repeat_type = ?, is_active = ? WHERE id = ?
-  `).run(
+  `, [
     title ?? existing.title,
     body ?? existing.body,
     captain_id !== undefined ? (captain_id || null) : existing.captain_id,
@@ -346,39 +337,39 @@ app.put('/api/sms/messages/:id', (req, res) => {
     repeat_type ?? existing.repeat_type,
     is_active ?? existing.is_active,
     req.params.id
-  );
-  res.json(db.prepare('SELECT * FROM sms_messages WHERE id = ?').get(req.params.id));
+  ]);
+  res.json(await queryOne('SELECT * FROM sms_messages WHERE id = ?', [req.params.id]));
 });
 
-app.delete('/api/sms/messages/:id', (req, res) => {
-  db.prepare('DELETE FROM sms_messages WHERE id = ?').run(req.params.id);
+app.delete('/api/sms/messages/:id', async (req, res) => {
+  await execute('DELETE FROM sms_messages WHERE id = ?', [req.params.id]);
   res.json({ ok: true });
 });
 
 // ─── SMS Log & Simulator ────────────────────────────────────
 
-app.get('/api/sms/log', (req, res) => {
+app.get('/api/sms/log', async (req, res) => {
   const { limit = 50 } = req.query;
-  const logs = db.prepare('SELECT * FROM sms_log ORDER BY sent_at DESC LIMIT ?').all(Number(limit));
+  const logs = await queryAll('SELECT * FROM sms_log ORDER BY sent_at DESC LIMIT ?', [Number(limit)]);
   res.json(logs);
 });
 
-app.post('/api/sms/send-now', (req, res) => {
+app.post('/api/sms/send-now', async (req, res) => {
   const { message_id, captain_id, body } = req.body;
 
   if (message_id) {
-    const msg = db.prepare('SELECT * FROM sms_messages WHERE id = ?').get(message_id);
+    const msg = await queryOne('SELECT * FROM sms_messages WHERE id = ?', [message_id]);
     if (!msg) return res.status(404).json({ error: 'الرسالة غير موجودة' });
 
-    const queued = smsGw.queueMessageToCaptains(msg);
-    db.prepare("UPDATE sms_messages SET last_sent_at = datetime('now') WHERE id = ?").run(msg.id);
+    const queued = await smsGw.queueMessageToCaptains(msg);
+    await execute(`UPDATE sms_messages SET last_sent_at = ${nowExpr()} WHERE id = ?`, [msg.id]);
     return res.json({ queued: queued.length, messages: queued });
   }
 
   if (captain_id && body) {
-    const captain = db.prepare('SELECT * FROM captains WHERE id = ?').get(captain_id);
+    const captain = await queryOne('SELECT * FROM captains WHERE id = ?', [captain_id]);
     if (!captain) return res.status(404).json({ error: 'الكابتن غير موجود' });
-    const queued = smsGw.queueSms({
+    const queued = await smsGw.queueSms({
       recipientPhone: captain.phone,
       message: body,
       captainId: captain.id,
@@ -391,53 +382,54 @@ app.post('/api/sms/send-now', (req, res) => {
   res.status(400).json({ error: 'حدد message_id أو captain_id + body' });
 });
 
-app.get('/api/sms/gateway-status', (_, res) => {
-  res.json({ stats: smsGw.getGatewayStats(), tokenConfigured: Boolean(smsGw.getGatewayToken()) });
+app.get('/api/sms/gateway-status', async (_, res) => {
+  res.json({ stats: await smsGw.getGatewayStats(), tokenConfigured: Boolean(smsGw.getGatewayToken()) });
 });
 
 // ─── SMS Gateway (بوابة الإرسال) ───────────────────────────
 
-app.get('/api/sms-gateway/stats', requireGatewayAuth, (_, res) => {
-  smsGw.touchGatewayHeartbeat();
-  res.json({ stats: smsGw.getGatewayStats() });
+app.get('/api/sms-gateway/stats', requireGatewayAuth, async (_, res) => {
+  await smsGw.touchGatewayHeartbeat();
+  res.json({ stats: await smsGw.getGatewayStats() });
 });
 
-app.get('/api/sms-gateway/pending', requireGatewayAuth, (req, res) => {
-  smsGw.touchGatewayHeartbeat();
-  const messages = smsGw.getPendingSms(req.query.limit);
+app.get('/api/sms-gateway/pending', requireGatewayAuth, async (req, res) => {
+  await smsGw.touchGatewayHeartbeat();
+  const messages = await smsGw.getPendingSms(req.query.limit);
   res.json({ messages });
 });
 
-app.post('/api/sms-gateway/:id/sent', requireGatewayAuth, (req, res) => {
-  const row = smsGw.markSmsSent(req.params.id);
+app.post('/api/sms-gateway/:id/sent', requireGatewayAuth, async (req, res) => {
+  const row = await smsGw.markSmsSent(req.params.id);
   if (!row) return res.status(404).json({ message: 'الرسالة غير موجودة' });
   res.json({ ok: true, message: row });
 });
 
-app.post('/api/sms-gateway/:id/failed', requireGatewayAuth, (req, res) => {
-  const row = smsGw.markSmsFailed(req.params.id, req.body?.error);
+app.post('/api/sms-gateway/:id/failed', requireGatewayAuth, async (req, res) => {
+  const row = await smsGw.markSmsFailed(req.params.id, req.body?.error);
   if (!row) return res.status(404).json({ message: 'الرسالة غير موجودة' });
   res.json({ ok: true, message: row });
 });
 
-app.get('/api/sms/simulator/inbox/:captainId', (req, res) => {
-  const logs = db.prepare(`
+app.get('/api/sms/simulator/inbox/:captainId', async (req, res) => {
+  const logs = await queryAll(`
     SELECT * FROM sms_log WHERE captain_id = ? ORDER BY sent_at DESC LIMIT 30
-  `).all(req.params.captainId);
+  `, [req.params.captainId]);
   res.json(logs);
 });
 
 // ─── Captain App Login (simple phone lookup) ────────────────
 
-app.post('/api/captain-auth/login', (req, res) => {
+app.post('/api/captain-auth/login', async (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) {
     return res.status(400).json({ error: 'اسم المستخدم وكلمة المرور مطلوبة' });
   }
   const key = String(username).trim();
-  const captain = db.prepare(
-    'SELECT * FROM captains WHERE captain_number = ? OR phone = ?'
-  ).get(key, key);
+  const captain = await queryOne(
+    'SELECT * FROM captains WHERE captain_number = ? OR phone = ?',
+    [key, key]
+  );
   if (!captain || !captain.password_hash) {
     return res.status(401).json({ error: 'اسم المستخدم أو كلمة المرور غير صحيحة' });
   }
@@ -447,12 +439,11 @@ app.post('/api/captain-auth/login', (req, res) => {
   res.json({ captain: sanitizeCaptain(captain), token: captain.id });
 });
 
-app.get('/api/captain-auth/me/:id', (req, res) => {
-  const captain = db.prepare('SELECT * FROM captains WHERE id = ?').get(req.params.id);
+app.get('/api/captain-auth/me/:id', async (req, res) => {
+  const captain = await queryOne('SELECT * FROM captains WHERE id = ?', [req.params.id]);
   if (!captain) return res.status(404).json({ error: 'غير موجود' });
 
-  const shifts = db.prepare('SELECT * FROM shifts WHERE captain_id = ? AND is_active = 1 ORDER BY day_of_week')
-    .all(captain.id)
+  const shifts = (await queryAll('SELECT * FROM shifts WHERE captain_id = ? AND is_active = 1 ORDER BY day_of_week', [captain.id]))
     .map(s => ({ ...s, day_name: DAYS[s.day_of_week] }));
 
   const today = new Date().getDay();
@@ -463,12 +454,12 @@ app.get('/api/captain-auth/me/:id', (req, res) => {
 
 // ─── Scheduler (checks every 30s) ───────────────────────────
 
-function processScheduledMessages() {
+async function processScheduledMessages() {
   const now = new Date();
   const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
   const currentDay = now.getDay();
 
-  const messages = db.prepare('SELECT * FROM sms_messages WHERE is_active = 1').all();
+  const messages = await queryAll('SELECT * FROM sms_messages WHERE is_active = 1');
 
   for (const msg of messages) {
     const schedDate = new Date(msg.scheduled_at);
@@ -487,25 +478,37 @@ function processScheduledMessages() {
     }
 
     const targets = msg.captain_id
-      ? [db.prepare('SELECT * FROM captains WHERE id = ?').get(msg.captain_id)].filter(Boolean)
-      : db.prepare('SELECT * FROM captains').all();
+      ? [await queryOne('SELECT * FROM captains WHERE id = ?', [msg.captain_id])].filter(Boolean)
+      : await queryAll('SELECT * FROM captains');
 
     if (targets.length === 0) continue;
 
-    smsGw.queueMessageToCaptains(msg);
+    await smsGw.queueMessageToCaptains(msg);
 
-    db.prepare("UPDATE sms_messages SET last_sent_at = datetime('now') WHERE id = ?").run(msg.id);
+    await execute(`UPDATE sms_messages SET last_sent_at = ${nowExpr()} WHERE id = ?`, [msg.id]);
 
     if (msg.repeat_type === 'once') {
-      db.prepare('UPDATE sms_messages SET is_active = 0 WHERE id = ?').run(msg.id);
+      await execute('UPDATE sms_messages SET is_active = 0 WHERE id = ?', [msg.id]);
     }
   }
 }
 
-setInterval(processScheduledMessages, 30000);
+setInterval(() => {
+  processScheduledMessages().catch(err => console.error('Scheduler error:', err));
+}, 30000);
 
-app.get('/api/health', (_, res) => res.json({ status: 'ok', days: DAYS }));
+app.get('/api/health', (_, res) => res.json({ status: 'ok', days: DAYS, db: getDbType() }));
 
-app.listen(PORT, () => {
-  console.log(`🚀 Captain Platform API running on http://localhost:${PORT}`);
+async function start() {
+  await initDb();
+  await seedIfEmpty();
+
+  app.listen(PORT, () => {
+    console.log(`🚀 Captain Platform API running on http://localhost:${PORT} [${getDbType()}]`);
+  });
+}
+
+start().catch(err => {
+  console.error('Failed to start server:', err);
+  process.exit(1);
 });
