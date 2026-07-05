@@ -161,7 +161,7 @@ export async function processShiftReminders() {
     await smsGw.queueSms({
       recipientPhone: captain.phone,
       message: body,
-      messageId: 'shift-reminder',
+      messageId: null,
       captainId: captain.id,
       captainName: captain.name,
       smsType: 'shift_reminder',
