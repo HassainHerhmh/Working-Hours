@@ -7,6 +7,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
 import db from './db.js';
+import * as smsGw from './smsGateway.service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -24,6 +25,15 @@ const storage = multer.diskStorage({
   filename: (_, file, cb) => cb(null, `${uuid()}${path.extname(file.originalname)}`)
 });
 const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 } });
+
+function requireGatewayAuth(req, res, next) {
+  const auth = req.headers.authorization || '';
+  const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+  if (!token || token !== smsGw.getGatewayToken()) {
+    return res.status(401).json({ message: 'رمز بوابة SMS غير صالح' });
+  }
+  next();
+}
 
 const DAYS = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
 
@@ -308,38 +318,54 @@ app.post('/api/sms/send-now', (req, res) => {
     const msg = db.prepare('SELECT * FROM sms_messages WHERE id = ?').get(message_id);
     if (!msg) return res.status(404).json({ error: 'الرسالة غير موجودة' });
 
-    const targets = msg.captain_id
-      ? [db.prepare('SELECT * FROM captains WHERE id = ?').get(msg.captain_id)].filter(Boolean)
-      : db.prepare('SELECT * FROM captains').all();
-
-    const insertLog = db.prepare(`
-      INSERT INTO sms_log (id, message_id, captain_id, captain_name, captain_phone, body, status)
-      VALUES (?, ?, ?, ?, ?, ?, 'sent')
-    `);
-
-    const sent = [];
-    for (const c of targets) {
-      const logId = uuid();
-      insertLog.run(logId, msg.id, c.id, c.name, c.phone, msg.body);
-      sent.push({ id: logId, captain: c.name, phone: c.phone });
-    }
-
+    const queued = smsGw.queueMessageToCaptains(msg);
     db.prepare("UPDATE sms_messages SET last_sent_at = datetime('now') WHERE id = ?").run(msg.id);
-    return res.json({ sent: sent.length, logs: sent });
+    return res.json({ queued: queued.length, messages: queued });
   }
 
   if (captain_id && body) {
     const captain = db.prepare('SELECT * FROM captains WHERE id = ?').get(captain_id);
     if (!captain) return res.status(404).json({ error: 'الكابتن غير موجود' });
-    const logId = uuid();
-    db.prepare(`
-      INSERT INTO sms_log (id, captain_id, captain_name, captain_phone, body, status)
-      VALUES (?, ?, ?, ?, ?, 'sent')
-    `).run(logId, captain.id, captain.name, captain.phone, body);
-    return res.json({ sent: 1, log: { id: logId, captain: captain.name } });
+    const queued = smsGw.queueSms({
+      recipientPhone: captain.phone,
+      message: body,
+      captainId: captain.id,
+      captainName: captain.name,
+      smsType: 'shift'
+    });
+    return res.json({ queued: 1, message: queued });
   }
 
   res.status(400).json({ error: 'حدد message_id أو captain_id + body' });
+});
+
+app.get('/api/sms/gateway-status', (_, res) => {
+  res.json({ stats: smsGw.getGatewayStats(), tokenConfigured: Boolean(smsGw.getGatewayToken()) });
+});
+
+// ─── SMS Gateway (بوابة الإرسال) ───────────────────────────
+
+app.get('/api/sms-gateway/stats', requireGatewayAuth, (_, res) => {
+  smsGw.touchGatewayHeartbeat();
+  res.json({ stats: smsGw.getGatewayStats() });
+});
+
+app.get('/api/sms-gateway/pending', requireGatewayAuth, (req, res) => {
+  smsGw.touchGatewayHeartbeat();
+  const messages = smsGw.getPendingSms(req.query.limit);
+  res.json({ messages });
+});
+
+app.post('/api/sms-gateway/:id/sent', requireGatewayAuth, (req, res) => {
+  const row = smsGw.markSmsSent(req.params.id);
+  if (!row) return res.status(404).json({ message: 'الرسالة غير موجودة' });
+  res.json({ ok: true, message: row });
+});
+
+app.post('/api/sms-gateway/:id/failed', requireGatewayAuth, (req, res) => {
+  const row = smsGw.markSmsFailed(req.params.id, req.body?.error);
+  if (!row) return res.status(404).json({ message: 'الرسالة غير موجودة' });
+  res.json({ ok: true, message: row });
 });
 
 app.get('/api/sms/simulator/inbox/:captainId', (req, res) => {
@@ -401,14 +427,9 @@ function processScheduledMessages() {
       ? [db.prepare('SELECT * FROM captains WHERE id = ?').get(msg.captain_id)].filter(Boolean)
       : db.prepare('SELECT * FROM captains').all();
 
-    const insertLog = db.prepare(`
-      INSERT INTO sms_log (id, message_id, captain_id, captain_name, captain_phone, body, status)
-      VALUES (?, ?, ?, ?, ?, ?, 'sent')
-    `);
+    if (targets.length === 0) continue;
 
-    for (const c of targets) {
-      insertLog.run(uuid(), msg.id, c.id, c.name, c.phone, msg.body);
-    }
+    smsGw.queueMessageToCaptains(msg);
 
     db.prepare("UPDATE sms_messages SET last_sent_at = datetime('now') WHERE id = ?").run(msg.id);
 

@@ -67,6 +67,25 @@ db.exec(`
     password_hash TEXT NOT NULL,
     created_at TEXT DEFAULT (datetime('now'))
   );
+
+  CREATE TABLE IF NOT EXISTS sms_queue (
+    id TEXT PRIMARY KEY,
+    recipient_phone TEXT NOT NULL,
+    message TEXT NOT NULL,
+    message_id TEXT REFERENCES sms_messages(id) ON DELETE SET NULL,
+    captain_id TEXT REFERENCES captains(id) ON DELETE SET NULL,
+    captain_name TEXT,
+    sms_type TEXT DEFAULT 'shift',
+    status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'sent', 'failed')),
+    error_message TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    sent_at TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS sms_gateway_heartbeat (
+    id INTEGER PRIMARY KEY DEFAULT 1,
+    last_seen_at TEXT DEFAULT (datetime('now'))
+  );
 `);
 
 export default db;
