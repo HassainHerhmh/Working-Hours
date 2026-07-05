@@ -172,6 +172,18 @@ app.patch('/api/users/:id/status', (req, res) => {
   res.json(sanitizeUser(db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id)));
 });
 
+app.patch('/api/users/:id/reset-password', (req, res) => {
+  const existing = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'المستخدم غير موجود' });
+  const { password } = req.body;
+  if (!password || String(password).length < 6) {
+    return res.status(400).json({ error: 'كلمة المرور يجب أن تكون 6 أحرف على الأقل' });
+  }
+  const hash = bcrypt.hashSync(password, 10);
+  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hash, req.params.id);
+  res.json({ ok: true, message: 'تم إعادة تعيين كلمة المرور' });
+});
+
 app.delete('/api/users/:id', (req, res) => {
   db.prepare('DELETE FROM users WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
@@ -235,6 +247,18 @@ app.put('/api/captains/:id', upload.single('photo'), (req, res) => {
 app.delete('/api/captains/:id', (req, res) => {
   db.prepare('DELETE FROM captains WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
+});
+
+app.patch('/api/captains/:id/reset-password', (req, res) => {
+  const existing = db.prepare('SELECT * FROM captains WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'الكابتن غير موجود' });
+  const { password } = req.body;
+  if (!password || String(password).length < 6) {
+    return res.status(400).json({ error: 'كلمة المرور يجب أن تكون 6 أحرف على الأقل' });
+  }
+  const hash = bcrypt.hashSync(password, 10);
+  db.prepare('UPDATE captains SET password_hash = ? WHERE id = ?').run(hash, req.params.id);
+  res.json({ ok: true, message: 'تم إعادة تعيين كلمة المرور' });
 });
 
 // ─── Shifts ─────────────────────────────────────────────────
