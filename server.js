@@ -46,17 +46,24 @@ function formatBreakDuration(totalMinutes) {
   return `${mins}د`;
 }
 
+function normalizeTime(t) {
+  if (!t || typeof t !== 'string') return '';
+  const m = t.trim().match(/^(\d{1,2}):(\d{2})/);
+  if (!m) return t;
+  return `${String(Number(m[1])).padStart(2, '0')}:${m[2]}`;
+}
+
 function enrichShift(shift) {
   if (!shift) return null;
-  const period1_start = shift.start_time;
-  const period1_end = shift.period1_end || '12:00';
+  const period1_start = normalizeTime(shift.start_time);
+  const period1_end = normalizeTime(shift.period1_end || '12:00');
   const break_minutes = Number(
     shift.break_minutes ?? Math.round(Number(shift.break_hours ?? 2) * 60)
   );
   const break_hours = Math.floor(break_minutes / 60);
   const break_mins = break_minutes % 60;
-  const period2_start = shift.period2_start || '14:00';
-  const period2_end = shift.end_time;
+  const period2_start = normalizeTime(shift.period2_start || '14:00');
+  const period2_end = normalizeTime(shift.end_time);
   const breakLabel = formatBreakDuration(break_minutes);
   return {
     ...shift,
@@ -410,7 +417,8 @@ app.delete('/api/sms/messages/:id', async (req, res) => {
 
 app.get('/api/sms/log', async (req, res) => {
   const { limit = 50 } = req.query;
-  const logs = await queryAll('SELECT * FROM sms_log ORDER BY sent_at DESC LIMIT ?', [Number(limit)]);
+  const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 200);
+  const logs = await queryAll(`SELECT * FROM sms_log ORDER BY sent_at DESC LIMIT ${safeLimit}`);
   res.json(logs);
 });
 

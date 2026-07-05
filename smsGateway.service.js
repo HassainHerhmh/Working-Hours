@@ -64,8 +64,8 @@ export async function getPendingSms(limit = 10) {
   const rows = await queryAll(`
     SELECT id, recipient_phone, message, message_id, captain_id, captain_name, sms_type, created_at
     FROM sms_queue WHERE status = 'pending'
-    ORDER BY created_at ASC LIMIT ?
-  `, [safeLimit]);
+    ORDER BY created_at ASC LIMIT ${safeLimit}
+  `);
   return rows.map(row => ({
     id: row.id,
     recipientPhone: row.recipient_phone,
