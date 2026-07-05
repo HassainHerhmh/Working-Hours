@@ -37,26 +37,49 @@ function requireGatewayAuth(req, res, next) {
 
 const DAYS = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
 
+function migrateDb() {
+  const cols = db.prepare('PRAGMA table_info(captains)').all();
+  if (!cols.some(c => c.name === 'password_hash')) {
+    db.exec('ALTER TABLE captains ADD COLUMN password_hash TEXT DEFAULT ""');
+  }
+}
+
+function sanitizeCaptain(captain) {
+  if (!captain) return null;
+  const { password_hash, ...safe } = captain;
+  return safe;
+}
+
+function ensureCaptainPasswords() {
+  const rows = db.prepare("SELECT id FROM captains WHERE password_hash IS NULL OR password_hash = ''").all();
+  if (!rows.length) return;
+  const hash = bcrypt.hashSync('123456', 10);
+  const update = db.prepare('UPDATE captains SET password_hash = ? WHERE id = ?');
+  for (const row of rows) update.run(hash, row.id);
+}
+
 function seedIfEmpty() {
+  migrateDb();
   const captainCount = db.prepare('SELECT COUNT(*) as c FROM captains').get().c;
   if (captainCount === 0) {
     const captains = [
-      { id: uuid(), name: 'أحمد محمد', phone: '967771234567', captain_number: 'C001' },
-      { id: uuid(), name: 'خالد علي', phone: '967772345678', captain_number: 'C002' },
-      { id: uuid(), name: 'سعد يوسف', phone: '967773456789', captain_number: 'C003' }
+      { name: 'أحمد محمد', phone: '967771234567', captain_number: 'C001' },
+      { name: 'خالد علي', phone: '967772345678', captain_number: 'C002' },
+      { name: 'سعد يوسف', phone: '967773456789', captain_number: 'C003' }
     ];
-
+    const defaultHash = bcrypt.hashSync('123456', 10);
     const insertCaptain = db.prepare(
-      'INSERT INTO captains (id, name, phone, captain_number) VALUES (?, ?, ?, ?)'
+      'INSERT INTO captains (id, name, phone, captain_number, password_hash) VALUES (?, ?, ?, ?, ?)'
     );
     const insertShift = db.prepare(
       'INSERT INTO shifts (id, captain_id, day_of_week, start_time, end_time) VALUES (?, ?, ?, ?, ?)'
     );
 
     for (const c of captains) {
-      insertCaptain.run(c.id, c.name, c.phone, c.captain_number);
+      const id = uuid();
+      insertCaptain.run(id, c.name, c.phone, c.captain_number, defaultHash);
       for (let day = 0; day <= 4; day++) {
-        insertShift.run(uuid(), c.id, day, '08:00', '17:00');
+        insertShift.run(uuid(), id, day, '08:00', '17:00');
       }
     }
   }
@@ -69,9 +92,12 @@ function seedIfEmpty() {
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `).run(uuid(), 'المدير', 'admin@go.com', '967770000000', 'admin', 'active', hash);
   }
+  ensureCaptainPasswords();
 }
 
+migrateDb();
 seedIfEmpty();
+ensureCaptainPasswords();
 
 function sanitizeUser(user) {
   const { password_hash, ...safe } = user;
@@ -155,27 +181,28 @@ app.delete('/api/users/:id', (req, res) => {
 
 app.get('/api/captains', (_, res) => {
   const captains = db.prepare('SELECT * FROM captains ORDER BY created_at DESC').all();
-  res.json(captains);
+  res.json(captains.map(sanitizeCaptain));
 });
 
 app.get('/api/captains/:id', (req, res) => {
   const captain = db.prepare('SELECT * FROM captains WHERE id = ?').get(req.params.id);
   if (!captain) return res.status(404).json({ error: 'الكابتن غير موجود' });
-  res.json(captain);
+  res.json(sanitizeCaptain(captain));
 });
 
 app.post('/api/captains', upload.single('photo'), (req, res) => {
-  const { name, phone, captain_number } = req.body;
+  const { name, phone, captain_number, password } = req.body;
   if (!name || !phone || !captain_number) {
     return res.status(400).json({ error: 'الاسم والهاتف ورقم الكابتن مطلوبة' });
   }
   const id = uuid();
   const photo = req.file ? `/uploads/${req.file.filename}` : '';
+  const hash = bcrypt.hashSync(password || '123456', 10);
   try {
     db.prepare(
-      'INSERT INTO captains (id, name, phone, captain_number, photo) VALUES (?, ?, ?, ?, ?)'
-    ).run(id, name, phone, captain_number, photo);
-    res.status(201).json(db.prepare('SELECT * FROM captains WHERE id = ?').get(id));
+      'INSERT INTO captains (id, name, phone, captain_number, photo, password_hash) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(id, name, phone, captain_number, photo, hash);
+    res.status(201).json(sanitizeCaptain(db.prepare('SELECT * FROM captains WHERE id = ?').get(id)));
   } catch (e) {
     if (e.message.includes('UNIQUE')) {
       return res.status(409).json({ error: 'رقم الهاتف أو رقم الكابتن مستخدم مسبقاً' });
@@ -188,14 +215,15 @@ app.put('/api/captains/:id', upload.single('photo'), (req, res) => {
   const existing = db.prepare('SELECT * FROM captains WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'الكابتن غير موجود' });
 
-  const { name, phone, captain_number } = req.body;
+  const { name, phone, captain_number, password } = req.body;
   const photo = req.file ? `/uploads/${req.file.filename}` : existing.photo;
+  const hash = password ? bcrypt.hashSync(password, 10) : existing.password_hash;
 
   try {
     db.prepare(
-      'UPDATE captains SET name = ?, phone = ?, captain_number = ?, photo = ? WHERE id = ?'
-    ).run(name || existing.name, phone || existing.phone, captain_number || existing.captain_number, photo, req.params.id);
-    res.json(db.prepare('SELECT * FROM captains WHERE id = ?').get(req.params.id));
+      'UPDATE captains SET name = ?, phone = ?, captain_number = ?, photo = ?, password_hash = ? WHERE id = ?'
+    ).run(name || existing.name, phone || existing.phone, captain_number || existing.captain_number, photo, hash, req.params.id);
+    res.json(sanitizeCaptain(db.prepare('SELECT * FROM captains WHERE id = ?').get(req.params.id)));
   } catch (e) {
     if (e.message.includes('UNIQUE')) {
       return res.status(409).json({ error: 'رقم الهاتف أو رقم الكابتن مستخدم مسبقاً' });
@@ -378,10 +406,21 @@ app.get('/api/sms/simulator/inbox/:captainId', (req, res) => {
 // ─── Captain App Login (simple phone lookup) ────────────────
 
 app.post('/api/captain-auth/login', (req, res) => {
-  const { phone } = req.body;
-  const captain = db.prepare('SELECT * FROM captains WHERE phone = ?').get(phone);
-  if (!captain) return res.status(401).json({ error: 'رقم الهاتف غير مسجل' });
-  res.json({ captain, token: captain.id });
+  const { username, password } = req.body;
+  if (!username || !password) {
+    return res.status(400).json({ error: 'اسم المستخدم وكلمة المرور مطلوبة' });
+  }
+  const key = String(username).trim();
+  const captain = db.prepare(
+    'SELECT * FROM captains WHERE captain_number = ? OR phone = ?'
+  ).get(key, key);
+  if (!captain || !captain.password_hash) {
+    return res.status(401).json({ error: 'اسم المستخدم أو كلمة المرور غير صحيحة' });
+  }
+  if (!bcrypt.compareSync(password, captain.password_hash)) {
+    return res.status(401).json({ error: 'اسم المستخدم أو كلمة المرور غير صحيحة' });
+  }
+  res.json({ captain: sanitizeCaptain(captain), token: captain.id });
 });
 
 app.get('/api/captain-auth/me/:id', (req, res) => {
@@ -395,7 +434,7 @@ app.get('/api/captain-auth/me/:id', (req, res) => {
   const today = new Date().getDay();
   const todayShift = shifts.find(s => s.day_of_week === today);
 
-  res.json({ captain, shifts, todayShift, todayName: DAYS[today] });
+  res.json({ captain: sanitizeCaptain(captain), shifts, todayShift, todayName: DAYS[today] });
 });
 
 // ─── Scheduler (checks every 30s) ───────────────────────────

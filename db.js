@@ -19,6 +19,7 @@ db.exec(`
     phone TEXT NOT NULL UNIQUE,
     captain_number TEXT NOT NULL UNIQUE,
     photo TEXT DEFAULT '',
+    password_hash TEXT DEFAULT '',
     created_at TEXT DEFAULT (datetime('now'))
   );
 
