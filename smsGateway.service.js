@@ -32,11 +32,19 @@ export async function touchGatewayHeartbeat() {
   }
 }
 
+function toTimestamp(value) {
+  if (!value) return NaN;
+  if (value instanceof Date) return value.getTime();
+  const raw = String(value);
+  return new Date(raw.includes('T') ? raw : raw.replace(' ', 'T')).getTime();
+}
+
 export async function isGatewayOnline() {
   const row = await queryOne('SELECT last_seen_at FROM sms_gateway_heartbeat WHERE id = 1');
   if (!row?.last_seen_at) return false;
-  const ageMs = Date.now() - new Date(row.last_seen_at.replace(' ', 'T')).getTime();
-  return ageMs <= GATEWAY_ONLINE_SECONDS * 1000;
+  const seenAt = toTimestamp(row.last_seen_at);
+  if (Number.isNaN(seenAt)) return false;
+  return Date.now() - seenAt <= GATEWAY_ONLINE_SECONDS * 1000;
 }
 
 export async function getGatewayStats() {
