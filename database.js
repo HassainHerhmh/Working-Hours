@@ -37,6 +37,7 @@ const SCHEMA_SQLITE = `
     break_hours REAL DEFAULT 2,
     break_minutes INTEGER DEFAULT 120,
     period2_start TEXT DEFAULT '14:00',
+    period_count INTEGER DEFAULT 2,
     is_active INTEGER DEFAULT 1,
     UNIQUE(captain_id, day_of_week)
   );
@@ -252,6 +253,11 @@ export async function migrateShiftPeriodColumns() {
   await addColumn(
     'ALTER TABLE shifts ADD COLUMN break_minutes INTEGER DEFAULT 120',
     'ALTER TABLE shifts ADD COLUMN break_minutes INT DEFAULT 120'
+  );
+
+  await addColumn(
+    'ALTER TABLE shifts ADD COLUMN period_count INTEGER DEFAULT 2',
+    'ALTER TABLE shifts ADD COLUMN period_count TINYINT DEFAULT 2'
   );
 
   await execute(`

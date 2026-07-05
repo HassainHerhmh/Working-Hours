@@ -45,6 +45,7 @@ function formatTimeRangeAr(start, end) {
 
 function enrichShift(shift) {
   if (!shift) return null;
+  const period_count = Number(shift.period_count) === 1 ? 1 : 2;
   const period1_start = normalizeTime(shift.start_time);
   const period1_end = normalizeTime(shift.period1_end || '12:00');
   const break_minutes = Number(
@@ -56,13 +57,17 @@ function enrichShift(shift) {
   const break_mins = break_minutes % 60;
   let breakLabel = break_mins ? `${break_hours}س ${break_mins}د` : `${break_hours}س`;
   if (!break_hours && break_mins) breakLabel = `${break_mins}د`;
+  const schedule_label = period_count === 1
+    ? formatTimeRangeAr(period1_start, period2_end)
+    : `${formatTimeRangeAr(period1_start, period1_end)} | راحة ${breakLabel} | ${formatTimeRangeAr(period2_start, period2_end)}`;
   return {
+    period_count,
     period1_start,
-    period1_end,
+    period1_end: period_count === 1 ? period2_end : period1_end,
     period2_start,
     period2_end,
     break_label: breakLabel,
-    schedule_label: `${formatTimeRangeAr(period1_start, period1_end)} | راحة ${breakLabel} | ${formatTimeRangeAr(period2_start, period2_end)}`,
+    schedule_label,
   };
 }
 
@@ -123,9 +128,9 @@ export function buildTomorrowMessage(captain, tomorrowShift, config) {
   if (tomorrowShift) {
     const s = enrichShift(tomorrowShift);
     vars.period1 = formatTimeRangeAr(s.period1_start, s.period1_end);
-    vars.period2 = formatTimeRangeAr(s.period2_start, s.period2_end);
+    vars.period2 = s.period_count === 1 ? '' : formatTimeRangeAr(s.period2_start, s.period2_end);
     vars.schedule = s.schedule_label;
-    vars.break = s.break_label;
+    vars.break = s.period_count === 1 ? '' : s.break_label;
     return applyTemplate(config.body_work, vars);
   }
 

@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS shifts (
   break_hours DECIMAL(4,1) DEFAULT 2,
   break_minutes INT DEFAULT 120,
   period2_start VARCHAR(10) DEFAULT '14:00',
+  period_count TINYINT DEFAULT 2,
   is_active TINYINT DEFAULT 1,
   UNIQUE KEY uniq_captain_day (captain_id, day_of_week),
   FOREIGN KEY (captain_id) REFERENCES captains(id) ON DELETE CASCADE

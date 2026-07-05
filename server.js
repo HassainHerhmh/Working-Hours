@@ -56,6 +56,7 @@ function normalizeTime(t) {
 
 function enrichShift(shift) {
   if (!shift) return null;
+  const period_count = Number(shift.period_count) === 1 ? 1 : 2;
   const period1_start = normalizeTime(shift.start_time);
   const period1_end = normalizeTime(shift.period1_end || '12:00');
   const break_minutes = Number(
@@ -66,17 +67,21 @@ function enrichShift(shift) {
   const period2_start = normalizeTime(shift.period2_start || '14:00');
   const period2_end = normalizeTime(shift.end_time);
   const breakLabel = formatBreakDuration(break_minutes);
+  const schedule_label = period_count === 1
+    ? `${period1_start}–${period2_end}`
+    : `${period1_start}–${period1_end} | راحة ${breakLabel} | ${period2_start}–${period2_end}`;
   return {
     ...shift,
+    period_count,
     period1_start,
-    period1_end,
+    period1_end: period_count === 1 ? period2_end : period1_end,
     break_minutes,
     break_hours,
     break_mins,
     period2_start,
     period2_end,
     break_label: breakLabel,
-    schedule_label: `${period1_start}–${period1_end} | راحة ${breakLabel} | ${period2_start}–${period2_end}`
+    schedule_label
   };
 }
 
@@ -344,17 +349,24 @@ app.put('/api/shifts/captain/:captainId', async (req, res) => {
     if (s.is_active !== false) {
       const period1_start = s.period1_start || s.start_time || '08:00';
       const period1_end = s.period1_end || '12:00';
-      const break_minutes = s.break_minutes != null
-        ? Number(s.break_minutes)
-        : Math.round(Number(s.break_hours ?? 2) * 60) + Number(s.break_mins ?? 0);
+      const period_count = Number(s.period_count) === 1 ? 1 : 2;
+      const break_minutes = period_count === 1 ? 0 : (
+        s.break_minutes != null
+          ? Number(s.break_minutes)
+          : Math.round(Number(s.break_hours ?? 2) * 60) + Number(s.break_mins ?? 0)
+      );
       const period2_start = s.period2_start || '14:00';
-      const period2_end = s.period2_end || s.end_time || '17:00';
+      const period2_end = period_count === 1
+        ? (s.period1_end || s.end_time || '17:00')
+        : (s.period2_end || s.end_time || '17:00');
+      const end_time = period2_end;
       await execute(
-        'INSERT INTO shifts (id, captain_id, day_of_week, start_time, end_time, period1_end, break_hours, break_minutes, period2_start, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO shifts (id, captain_id, day_of_week, start_time, end_time, period1_end, break_hours, break_minutes, period2_start, period_count, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         [
           uuid(), req.params.captainId, s.day_of_week,
-          period1_start, period2_end, period1_end,
-          break_minutes / 60, break_minutes, period2_start, 1
+          period1_start, end_time,
+          period_count === 1 ? end_time : period1_end,
+          break_minutes / 60, break_minutes, period2_start, period_count, 1
         ]
       );
     }
