@@ -90,6 +90,14 @@ const SCHEMA_SQLITE = `
     id INTEGER PRIMARY KEY DEFAULT 1,
     last_seen_at TEXT DEFAULT (datetime('now'))
   );
+  CREATE TABLE IF NOT EXISTS shift_reminder_config (
+    id INTEGER PRIMARY KEY DEFAULT 1,
+    send_time TEXT NOT NULL DEFAULT '09:00',
+    body_work TEXT NOT NULL,
+    body_off TEXT NOT NULL,
+    is_active INTEGER DEFAULT 0,
+    last_sent_date TEXT
+  );
 `;
 
 const SCHEMA_MYSQL = fs.readFileSync(path.join(__dirname, 'schema.mysql.sql'), 'utf8');
@@ -257,6 +265,33 @@ export async function migrateShiftPeriodColumns() {
        OR break_minutes IS NULL
        OR period2_start IS NULL OR period2_start = ''
   `);
+}
+
+export async function migrateShiftReminderTable() {
+  const sql = `
+    CREATE TABLE IF NOT EXISTS shift_reminder_config (
+      id INTEGER PRIMARY KEY DEFAULT 1,
+      send_time TEXT NOT NULL DEFAULT '09:00',
+      body_work TEXT NOT NULL,
+      body_off TEXT NOT NULL,
+      is_active INTEGER DEFAULT 0,
+      last_sent_date TEXT
+    )
+  `;
+  if (isMySQL) {
+    await execute(`
+      CREATE TABLE IF NOT EXISTS shift_reminder_config (
+        id INT PRIMARY KEY DEFAULT 1,
+        send_time VARCHAR(5) NOT NULL DEFAULT '09:00',
+        body_work TEXT NOT NULL,
+        body_off TEXT NOT NULL,
+        is_active TINYINT DEFAULT 0,
+        last_sent_date VARCHAR(10) NULL
+      )
+    `);
+  } else {
+    sqlite.exec(sql);
+  }
 }
 
 export async function migrateCaptainUsernameColumn() {

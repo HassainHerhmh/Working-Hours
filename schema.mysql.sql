@@ -86,3 +86,12 @@ CREATE TABLE IF NOT EXISTS sms_gateway_heartbeat (
   id INT PRIMARY KEY DEFAULT 1,
   last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS shift_reminder_config (
+  id INT PRIMARY KEY DEFAULT 1,
+  send_time VARCHAR(5) NOT NULL DEFAULT '09:00',
+  body_work TEXT NOT NULL,
+  body_off TEXT NOT NULL,
+  is_active TINYINT DEFAULT 0,
+  last_sent_date VARCHAR(10) NULL
+);

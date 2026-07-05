@@ -6,8 +6,9 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
-import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn, migrateShiftPeriodColumns, toDbDateTime } from './database.js';
+import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn, migrateShiftPeriodColumns, migrateShiftReminderTable, toDbDateTime } from './database.js';
 import * as smsGw from './smsGateway.service.js';
+import * as shiftReminder from './shiftReminder.service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -107,6 +108,7 @@ async function seedIfEmpty() {
   await migrateCaptainPasswordColumn();
   await migrateCaptainUsernameColumn();
   await migrateShiftPeriodColumns();
+  await migrateShiftReminderTable();
   const captainCount = Number((await queryOne('SELECT COUNT(*) as c FROM captains')).c);
   if (captainCount === 0) {
     const captains = [
@@ -413,6 +415,33 @@ app.delete('/api/sms/messages/:id', async (req, res) => {
   res.json({ ok: true });
 });
 
+app.get('/api/sms/shift-reminder', async (_, res) => {
+  res.json(await shiftReminder.getShiftReminderConfig());
+});
+
+app.put('/api/sms/shift-reminder', async (req, res) => {
+  const { send_time, body_work, body_off, is_active } = req.body;
+  const saved = await shiftReminder.saveShiftReminderConfig({
+    send_time, body_work, body_off, is_active,
+  });
+  res.json(saved);
+});
+
+app.post('/api/sms/shift-reminder/test', async (_, res) => {
+  const config = await shiftReminder.getShiftReminderConfig();
+  const captains = await queryAll('SELECT * FROM captains LIMIT 1');
+  if (!captains.length) return res.status(400).json({ error: 'لا يوجد كباتن' });
+  const captain = captains[0];
+  const tomorrow = shiftReminder.getYemenNow();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const shift = await queryOne(
+    'SELECT * FROM shifts WHERE captain_id = ? AND day_of_week = ? AND is_active = 1',
+    [captain.id, tomorrow.getDay()]
+  );
+  const preview = shiftReminder.buildTomorrowMessage(captain, shift, config);
+  res.json({ preview, captain: captain.name, hasShift: Boolean(shift) });
+});
+
 // ─── SMS Log & Simulator ────────────────────────────────────
 
 app.get('/api/sms/log', async (req, res) => {
@@ -547,6 +576,8 @@ app.get('/api/captain-auth/me/:id', async (req, res) => {
 // ─── Scheduler (checks every 30s) ───────────────────────────
 
 async function processScheduledMessages() {
+  await shiftReminder.processShiftReminders().catch(err => console.error('Shift reminder error:', err));
+
   const now = new Date();
   const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
   const currentDay = now.getDay();
