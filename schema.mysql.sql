@@ -96,3 +96,13 @@ CREATE TABLE IF NOT EXISTS shift_reminder_config (
   is_active TINYINT DEFAULT 0,
   last_sent_date VARCHAR(10) NULL
 );
+
+CREATE TABLE IF NOT EXISTS attendance_checkins (
+  id VARCHAR(36) PRIMARY KEY,
+  captain_id VARCHAR(36) NOT NULL,
+  check_date VARCHAR(10) NOT NULL,
+  checked_in_at DATETIME NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_captain_date (captain_id, check_date),
+  FOREIGN KEY (captain_id) REFERENCES captains(id) ON DELETE CASCADE
+);

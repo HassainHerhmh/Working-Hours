@@ -99,6 +99,14 @@ const SCHEMA_SQLITE = `
     is_active INTEGER DEFAULT 0,
     last_sent_date TEXT
   );
+  CREATE TABLE IF NOT EXISTS attendance_checkins (
+    id TEXT PRIMARY KEY,
+    captain_id TEXT NOT NULL REFERENCES captains(id) ON DELETE CASCADE,
+    check_date TEXT NOT NULL,
+    checked_in_at TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(captain_id, check_date)
+  );
 `;
 
 const SCHEMA_MYSQL = fs.readFileSync(path.join(__dirname, 'schema.mysql.sql'), 'utf8');
@@ -293,6 +301,34 @@ export async function migrateShiftReminderTable() {
         body_off TEXT NOT NULL,
         is_active TINYINT DEFAULT 0,
         last_sent_date VARCHAR(10) NULL
+      )
+    `);
+  } else {
+    sqlite.exec(sql);
+  }
+}
+
+export async function migrateAttendanceTable() {
+  const sql = `
+    CREATE TABLE IF NOT EXISTS attendance_checkins (
+      id TEXT PRIMARY KEY,
+      captain_id TEXT NOT NULL,
+      check_date TEXT NOT NULL,
+      checked_in_at TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(captain_id, check_date)
+    )
+  `;
+  if (isMySQL) {
+    await execute(`
+      CREATE TABLE IF NOT EXISTS attendance_checkins (
+        id VARCHAR(36) PRIMARY KEY,
+        captain_id VARCHAR(36) NOT NULL,
+        check_date VARCHAR(10) NOT NULL,
+        checked_in_at DATETIME NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_captain_date (captain_id, check_date),
+        FOREIGN KEY (captain_id) REFERENCES captains(id) ON DELETE CASCADE
       )
     `);
   } else {

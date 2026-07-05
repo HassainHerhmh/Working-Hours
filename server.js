@@ -6,9 +6,10 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
-import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn, migrateShiftPeriodColumns, migrateShiftReminderTable, toDbDateTime } from './database.js';
+import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn, migrateShiftPeriodColumns, migrateShiftReminderTable, migrateAttendanceTable, toDbDateTime } from './database.js';
 import * as smsGw from './smsGateway.service.js';
 import * as shiftReminder from './shiftReminder.service.js';
+import * as attendance from './attendance.service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -114,6 +115,7 @@ async function seedIfEmpty() {
   await migrateCaptainUsernameColumn();
   await migrateShiftPeriodColumns();
   await migrateShiftReminderTable();
+  await migrateAttendanceTable();
   const captainCount = Number((await queryOne('SELECT COUNT(*) as c FROM captains')).c);
   if (captainCount === 0) {
     const captains = [
@@ -581,8 +583,43 @@ app.get('/api/captain-auth/me/:id', async (req, res) => {
 
   const today = new Date().getDay();
   const todayShift = shifts.find(s => s.day_of_week === today);
+  const attendanceStatus = await attendance.getCheckInStatus(captain.id);
 
-  res.json({ captain: sanitizeCaptain(captain), shifts, todayShift, todayName: DAYS[today] });
+  res.json({
+    captain: sanitizeCaptain(captain),
+    shifts,
+    todayShift,
+    todayName: DAYS[today],
+    attendance: attendanceStatus,
+  });
+});
+
+// ─── Attendance ─────────────────────────────────────────────
+
+app.post('/api/attendance/check-in', async (req, res) => {
+  const { captain_id } = req.body;
+  if (!captain_id) return res.status(400).json({ error: 'معرّف الكابتن مطلوب' });
+  try {
+    const result = await attendance.recordCheckIn(captain_id);
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.get('/api/attendance/status/:captainId', async (req, res) => {
+  const status = await attendance.getCheckInStatus(req.params.captainId);
+  res.json(status);
+});
+
+app.get('/api/attendance/report', async (req, res) => {
+  const { period = 'day', date, captain_id } = req.query;
+  const report = await attendance.getAttendanceReport({
+    period: ['day', 'week', 'month'].includes(period) ? period : 'day',
+    date: date || undefined,
+    captain_id: captain_id || undefined,
+  });
+  res.json(report);
 });
 
 // ─── Scheduler (checks every 30s) ───────────────────────────
