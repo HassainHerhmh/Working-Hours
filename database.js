@@ -35,6 +35,7 @@ const SCHEMA_SQLITE = `
     end_time TEXT NOT NULL,
     period1_end TEXT DEFAULT '12:00',
     break_hours REAL DEFAULT 2,
+    break_minutes INTEGER DEFAULT 120,
     period2_start TEXT DEFAULT '14:00',
     is_active INTEGER DEFAULT 1,
     UNIQUE(captain_id, day_of_week)
@@ -222,13 +223,20 @@ export async function migrateShiftPeriodColumns() {
     "ALTER TABLE shifts ADD COLUMN period2_start VARCHAR(10) DEFAULT '14:00'"
   );
 
+  await addColumn(
+    'ALTER TABLE shifts ADD COLUMN break_minutes INTEGER DEFAULT 120',
+    'ALTER TABLE shifts ADD COLUMN break_minutes INT DEFAULT 120'
+  );
+
   await execute(`
     UPDATE shifts SET
       period1_end = COALESCE(NULLIF(period1_end, ''), '12:00'),
       break_hours = COALESCE(break_hours, 2),
+      break_minutes = COALESCE(break_minutes, ROUND(COALESCE(break_hours, 2) * 60)),
       period2_start = COALESCE(NULLIF(period2_start, ''), '14:00')
     WHERE period1_end IS NULL OR period1_end = ''
        OR break_hours IS NULL
+       OR break_minutes IS NULL
        OR period2_start IS NULL OR period2_start = ''
   `);
 }

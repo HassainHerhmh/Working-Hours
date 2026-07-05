@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS shifts (
   end_time VARCHAR(10) NOT NULL,
   period1_end VARCHAR(10) DEFAULT '12:00',
   break_hours DECIMAL(4,1) DEFAULT 2,
+  break_minutes INT DEFAULT 120,
   period2_start VARCHAR(10) DEFAULT '14:00',
   is_active TINYINT DEFAULT 1,
   UNIQUE KEY uniq_captain_day (captain_id, day_of_week),

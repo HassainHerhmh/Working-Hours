@@ -37,22 +37,38 @@ function requireGatewayAuth(req, res, next) {
 
 const DAYS = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
 
+function formatBreakDuration(totalMinutes) {
+  const minutes = Math.max(0, Number(totalMinutes) || 0);
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  if (hours && mins) return `${hours}س ${mins}د`;
+  if (hours) return `${hours}س`;
+  return `${mins}د`;
+}
+
 function enrichShift(shift) {
   if (!shift) return null;
   const period1_start = shift.start_time;
   const period1_end = shift.period1_end || '12:00';
-  const break_hours = Number(shift.break_hours ?? 2);
+  const break_minutes = Number(
+    shift.break_minutes ?? Math.round(Number(shift.break_hours ?? 2) * 60)
+  );
+  const break_hours = Math.floor(break_minutes / 60);
+  const break_mins = break_minutes % 60;
   const period2_start = shift.period2_start || '14:00';
   const period2_end = shift.end_time;
-  const breakLabel = Number.isInteger(break_hours) ? `${break_hours}` : String(break_hours);
+  const breakLabel = formatBreakDuration(break_minutes);
   return {
     ...shift,
     period1_start,
     period1_end,
+    break_minutes,
     break_hours,
+    break_mins,
     period2_start,
     period2_end,
-    schedule_label: `${period1_start}–${period1_end} | راحة ${breakLabel}س | ${period2_start}–${period2_end}`
+    break_label: breakLabel,
+    schedule_label: `${period1_start}–${period1_end} | راحة ${breakLabel} | ${period2_start}–${period2_end}`
   };
 }
 
@@ -101,8 +117,8 @@ async function seedIfEmpty() {
       );
       for (let day = 0; day <= 4; day++) {
         await execute(
-          'INSERT INTO shifts (id, captain_id, day_of_week, start_time, end_time, period1_end, break_hours, period2_start, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          [uuid(), id, day, '08:00', '17:00', '12:00', 2, '14:00', 1]
+          'INSERT INTO shifts (id, captain_id, day_of_week, start_time, end_time, period1_end, break_hours, break_minutes, period2_start, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [uuid(), id, day, '08:00', '17:00', '12:00', 2, 120, '14:00', 1]
         );
       }
     }
@@ -319,12 +335,18 @@ app.put('/api/shifts/captain/:captainId', async (req, res) => {
     if (s.is_active !== false) {
       const period1_start = s.period1_start || s.start_time || '08:00';
       const period1_end = s.period1_end || '12:00';
-      const break_hours = Number(s.break_hours ?? 2);
+      const break_minutes = s.break_minutes != null
+        ? Number(s.break_minutes)
+        : Math.round(Number(s.break_hours ?? 2) * 60) + Number(s.break_mins ?? 0);
       const period2_start = s.period2_start || '14:00';
       const period2_end = s.period2_end || s.end_time || '17:00';
       await execute(
-        'INSERT INTO shifts (id, captain_id, day_of_week, start_time, end_time, period1_end, break_hours, period2_start, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [uuid(), req.params.captainId, s.day_of_week, period1_start, period2_end, period1_end, break_hours, period2_start, 1]
+        'INSERT INTO shifts (id, captain_id, day_of_week, start_time, end_time, period1_end, break_hours, break_minutes, period2_start, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [
+          uuid(), req.params.captainId, s.day_of_week,
+          period1_start, period2_end, period1_end,
+          break_minutes / 60, break_minutes, period2_start, 1
+        ]
       );
     }
   }
