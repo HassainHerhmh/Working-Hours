@@ -180,6 +180,47 @@ export async function processShiftReminders() {
   }
 }
 
+/** إرسال فوري لجميع الكباتن — يدوياً من المنصة */
+export async function sendShiftRemindersNow(override = {}) {
+  const saved = await getShiftReminderConfig();
+  const config = {
+    ...saved,
+    body_work: (override.body_work ?? saved.body_work ?? DEFAULT_BODY_WORK).trim(),
+    body_off: (override.body_off ?? saved.body_off ?? DEFAULT_BODY_OFF).trim(),
+  };
+
+  const now = getYemenNow();
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const tomorrowDay = tomorrow.getDay();
+
+  const captains = await queryAll('SELECT * FROM captains');
+  if (!captains.length) throw new Error('لا يوجد كباتن');
+
+  let queued = 0;
+  for (const captain of captains) {
+    const shift = await queryOne(
+      'SELECT * FROM shifts WHERE captain_id = ? AND day_of_week = ? AND is_active = 1',
+      [captain.id, tomorrowDay]
+    );
+    const body = buildTomorrowMessage(captain, shift, config);
+    await smsGw.queueSms({
+      recipientPhone: captain.phone,
+      message: body,
+      messageId: null,
+      captainId: captain.id,
+      captainName: captain.name,
+      smsType: 'shift_reminder',
+    });
+    queued++;
+  }
+
+  const todayKey = yemenDateKey(now);
+  await execute('UPDATE shift_reminder_config SET last_sent_date = ? WHERE id = 1', [todayKey]);
+
+  return { ok: true, queued };
+}
+
 export const SHIFT_REMINDER_PLACEHOLDERS = [
   { key: '{name}', label: 'اسم الكابتن' },
   { key: '{day}', label: 'اسم يوم الغد' },

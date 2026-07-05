@@ -456,6 +456,16 @@ app.post('/api/sms/shift-reminder/test', async (_, res) => {
   res.json({ preview, captain: captain.name, hasShift: Boolean(shift) });
 });
 
+app.post('/api/sms/shift-reminder/send-now', async (req, res) => {
+  try {
+    const { body_work, body_off } = req.body || {};
+    const result = await shiftReminder.sendShiftRemindersNow({ body_work, body_off });
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 // ─── SMS Log & Simulator ────────────────────────────────────
 
 app.get('/api/sms/log', async (req, res) => {
