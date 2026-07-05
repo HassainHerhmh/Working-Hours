@@ -22,6 +22,7 @@ const SCHEMA_SQLITE = `
     name TEXT NOT NULL,
     phone TEXT NOT NULL UNIQUE,
     captain_number TEXT NOT NULL UNIQUE,
+    username TEXT UNIQUE,
     photo TEXT DEFAULT '',
     password_hash TEXT DEFAULT '',
     created_at TEXT DEFAULT (datetime('now'))
@@ -193,6 +194,32 @@ export async function migrateCaptainPasswordColumn() {
   const cols = sqlite.prepare('PRAGMA table_info(captains)').all();
   if (!cols.some(c => c.name === 'password_hash')) {
     sqlite.exec('ALTER TABLE captains ADD COLUMN password_hash TEXT DEFAULT ""');
+  }
+}
+
+export async function migrateCaptainUsernameColumn() {
+  if (isMySQL) {
+    const cols = await queryAll("SHOW COLUMNS FROM captains LIKE 'username'");
+    if (!cols.length) {
+      await execute('ALTER TABLE captains ADD COLUMN username VARCHAR(50) NULL UNIQUE');
+    }
+  } else {
+    const cols = sqlite.prepare('PRAGMA table_info(captains)').all();
+    if (!cols.some(c => c.name === 'username')) {
+      sqlite.exec('ALTER TABLE captains ADD COLUMN username TEXT UNIQUE');
+    }
+  }
+
+  const rows = await queryAll(
+    "SELECT id, captain_number, username FROM captains WHERE username IS NULL OR username = ''"
+  );
+  for (const row of rows) {
+    if (row.captain_number) {
+      await execute('UPDATE captains SET username = ? WHERE id = ?', [
+        String(row.captain_number).trim().toLowerCase(),
+        row.id
+      ]);
+    }
   }
 }
 

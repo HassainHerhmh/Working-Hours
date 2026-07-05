@@ -6,7 +6,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
-import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn } from './database.js';
+import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn } from './database.js';
 import * as smsGw from './smsGateway.service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -63,20 +63,21 @@ async function ensureCaptainPasswords() {
 
 async function seedIfEmpty() {
   await migrateCaptainPasswordColumn();
+  await migrateCaptainUsernameColumn();
   const captainCount = Number((await queryOne('SELECT COUNT(*) as c FROM captains')).c);
   if (captainCount === 0) {
     const captains = [
-      { name: 'أحمد محمد', phone: '967771234567', captain_number: 'C001' },
-      { name: 'خالد علي', phone: '967772345678', captain_number: 'C002' },
-      { name: 'سعد يوسف', phone: '967773456789', captain_number: 'C003' }
+      { name: 'أحمد محمد', phone: '967771234567', captain_number: 'C001', username: 'c001' },
+      { name: 'خالد علي', phone: '967772345678', captain_number: 'C002', username: 'c002' },
+      { name: 'سعد يوسف', phone: '967773456789', captain_number: 'C003', username: 'c003' }
     ];
     const defaultHash = bcrypt.hashSync('123456', 10);
 
     for (const c of captains) {
       const id = uuid();
       await execute(
-        'INSERT INTO captains (id, name, phone, captain_number, password_hash) VALUES (?, ?, ?, ?, ?)',
-        [id, c.name, c.phone, c.captain_number, defaultHash]
+        'INSERT INTO captains (id, name, phone, captain_number, username, password_hash) VALUES (?, ?, ?, ?, ?, ?)',
+        [id, c.name, c.phone, c.captain_number, c.username, defaultHash]
       );
       for (let day = 0; day <= 4; day++) {
         await execute(
@@ -197,22 +198,23 @@ app.get('/api/captains/:id', async (req, res) => {
 });
 
 app.post('/api/captains', upload.single('photo'), async (req, res) => {
-  const { name, phone, captain_number, password } = req.body;
-  if (!name || !phone || !captain_number) {
-    return res.status(400).json({ error: 'الاسم والهاتف ورقم الكابتن مطلوبة' });
+  const { name, phone, captain_number, username, password } = req.body;
+  if (!name || !phone || !captain_number || !username) {
+    return res.status(400).json({ error: 'الاسم والهاتف ورقم الكابتن واسم المستخدم مطلوبة' });
   }
   const id = uuid();
   const photo = req.file ? `/uploads/${req.file.filename}` : '';
   const hash = bcrypt.hashSync(password || '123456', 10);
+  const normalizedUsername = String(username).trim().toLowerCase();
   try {
     await execute(
-      'INSERT INTO captains (id, name, phone, captain_number, photo, password_hash) VALUES (?, ?, ?, ?, ?, ?)',
-      [id, name, phone, captain_number, photo, hash]
+      'INSERT INTO captains (id, name, phone, captain_number, username, photo, password_hash) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [id, name, phone, captain_number, normalizedUsername, photo, hash]
     );
     res.status(201).json(sanitizeCaptain(await queryOne('SELECT * FROM captains WHERE id = ?', [id])));
   } catch (e) {
     if (isUniqueError(e)) {
-      return res.status(409).json({ error: 'رقم الهاتف أو رقم الكابتن مستخدم مسبقاً' });
+      return res.status(409).json({ error: 'رقم الهاتف أو رقم الكابتن أو اسم المستخدم مستخدم مسبقاً' });
     }
     throw e;
   }
@@ -222,19 +224,30 @@ app.put('/api/captains/:id', upload.single('photo'), async (req, res) => {
   const existing = await queryOne('SELECT * FROM captains WHERE id = ?', [req.params.id]);
   if (!existing) return res.status(404).json({ error: 'الكابتن غير موجود' });
 
-  const { name, phone, captain_number, password } = req.body;
+  const { name, phone, captain_number, username, password } = req.body;
   const photo = req.file ? `/uploads/${req.file.filename}` : existing.photo;
   const hash = password ? bcrypt.hashSync(password, 10) : existing.password_hash;
+  const normalizedUsername = username
+    ? String(username).trim().toLowerCase()
+    : existing.username;
 
   try {
     await execute(
-      'UPDATE captains SET name = ?, phone = ?, captain_number = ?, photo = ?, password_hash = ? WHERE id = ?',
-      [name || existing.name, phone || existing.phone, captain_number || existing.captain_number, photo, hash, req.params.id]
+      'UPDATE captains SET name = ?, phone = ?, captain_number = ?, username = ?, photo = ?, password_hash = ? WHERE id = ?',
+      [
+        name || existing.name,
+        phone || existing.phone,
+        captain_number || existing.captain_number,
+        normalizedUsername,
+        photo,
+        hash,
+        req.params.id
+      ]
     );
     res.json(sanitizeCaptain(await queryOne('SELECT * FROM captains WHERE id = ?', [req.params.id])));
   } catch (e) {
     if (isUniqueError(e)) {
-      return res.status(409).json({ error: 'رقم الهاتف أو رقم الكابتن مستخدم مسبقاً' });
+      return res.status(409).json({ error: 'رقم الهاتف أو رقم الكابتن أو اسم المستخدم مستخدم مسبقاً' });
     }
     throw e;
   }
@@ -449,10 +462,10 @@ app.post('/api/captain-auth/login', async (req, res) => {
   if (!username || !password) {
     return res.status(400).json({ error: 'اسم المستخدم وكلمة المرور مطلوبة' });
   }
-  const key = String(username).trim();
+  const key = String(username).trim().toLowerCase();
   const captain = await queryOne(
-    'SELECT * FROM captains WHERE captain_number = ? OR phone = ?',
-    [key, key]
+    'SELECT * FROM captains WHERE username = ?',
+    [key]
   );
   if (!captain || !captain.password_hash) {
     return res.status(401).json({ error: 'اسم المستخدم أو كلمة المرور غير صحيحة' });
