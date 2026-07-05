@@ -455,10 +455,10 @@ app.post('/api/captain-auth/login', async (req, res) => {
     [key, key]
   );
   if (!captain || !captain.password_hash) {
-    return res.status(401).json({ error: 'البريد الإلكتروني أو رقم الهاتف أو كلمة المرور غير صحيحة' });
+    return res.status(401).json({ error: 'اسم المستخدم أو كلمة المرور غير صحيحة' });
   }
   if (!bcrypt.compareSync(password, captain.password_hash)) {
-    return res.status(401).json({ error: 'البريد الإلكتروني أو رقم الهاتف أو كلمة المرور غير صحيحة' });
+    return res.status(401).json({ error: 'اسم المستخدم أو كلمة المرور غير صحيحة' });
   }
   res.json({ captain: sanitizeCaptain(captain), token: captain.id });
 });
