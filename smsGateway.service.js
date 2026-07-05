@@ -27,7 +27,7 @@ export function touchGatewayHeartbeat() {
 export function isGatewayOnline() {
   const row = db.prepare('SELECT last_seen_at FROM sms_gateway_heartbeat WHERE id = 1').get();
   if (!row?.last_seen_at) return false;
-  const ageMs = Date.now() - new Date(row.last_seen_at + 'Z').getTime();
+  const ageMs = Date.now() - new Date(row.last_seen_at.replace(' ', 'T')).getTime();
   return ageMs <= GATEWAY_ONLINE_SECONDS * 1000;
 }
 
