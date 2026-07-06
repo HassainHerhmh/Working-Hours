@@ -601,6 +601,109 @@ export async function migrateFinanceCommissionSalesDateColumn() {
   }
 }
 
+export async function migrateFinanceInvoicePerDate() {
+  const today = new Date().toISOString().slice(0, 10);
+
+  if (isMySQL) {
+    const invoiceCols = await queryAll("SHOW COLUMNS FROM captain_store_invoices LIKE 'sales_date'");
+    if (!invoiceCols.length) {
+      await execute('ALTER TABLE captain_store_invoices ADD COLUMN sales_date VARCHAR(10) NULL');
+    }
+  } else {
+    const invoiceCols = sqlite.prepare('PRAGMA table_info(captain_store_invoices)').all();
+    if (!invoiceCols.some(c => c.name === 'sales_date')) {
+      sqlite.exec('ALTER TABLE captain_store_invoices ADD COLUMN sales_date TEXT');
+    }
+  }
+
+  const invoiceRows = await queryAll(
+    'SELECT id, captain_id FROM captain_store_invoices WHERE sales_date IS NULL OR sales_date = ?',
+    ['']
+  );
+  for (const row of invoiceRows) {
+    const posting = await queryOne(
+      'SELECT sales_date, posted_at FROM finance_invoice_postings WHERE captain_id = ? ORDER BY posted_at DESC LIMIT 1',
+      [row.captain_id]
+    );
+    const salesDate = posting?.sales_date || String(posting?.posted_at || '').slice(0, 10) || today;
+    await execute('UPDATE captain_store_invoices SET sales_date = ? WHERE id = ?', [salesDate, row.id]);
+  }
+
+  if (isMySQL) {
+    const indexes = await queryAll('SHOW INDEX FROM finance_invoice_postings WHERE Key_name = ?', ['captain_id']);
+    if (indexes.length) {
+      await execute('ALTER TABLE finance_invoice_postings DROP INDEX captain_id');
+    }
+    const uniqPosting = await queryAll(
+      'SHOW INDEX FROM finance_invoice_postings WHERE Key_name = ?',
+      ['uniq_captain_invoice_sales_date']
+    );
+    if (!uniqPosting.length) {
+      await execute(
+        'ALTER TABLE finance_invoice_postings ADD UNIQUE KEY uniq_captain_invoice_sales_date (captain_id, sales_date)'
+      );
+    }
+
+    const storeIndexes = await queryAll('SHOW INDEX FROM captain_store_invoices WHERE Key_name = ?', ['uniq_captain_store']);
+    if (storeIndexes.length) {
+      await execute('ALTER TABLE captain_store_invoices DROP INDEX uniq_captain_store');
+    }
+    const uniqStoreDate = await queryAll(
+      'SHOW INDEX FROM captain_store_invoices WHERE Key_name = ?',
+      ['uniq_captain_store_date']
+    );
+    if (!uniqStoreDate.length) {
+      await execute(
+        'ALTER TABLE captain_store_invoices ADD UNIQUE KEY uniq_captain_store_date (captain_id, store_id, sales_date)'
+      );
+    }
+  } else {
+    const postingIndexes = sqlite.prepare('PRAGMA index_list(finance_invoice_postings)').all();
+    if (postingIndexes.some(i => i.unique)) {
+      sqlite.exec(`
+        CREATE TABLE IF NOT EXISTS finance_invoice_postings_new (
+          id TEXT PRIMARY KEY,
+          captain_id TEXT NOT NULL REFERENCES captains(id) ON DELETE CASCADE,
+          total_invoices REAL NOT NULL DEFAULT 0,
+          transfers_debts REAL NOT NULL DEFAULT 0,
+          sales_date TEXT NOT NULL,
+          posted_at TEXT DEFAULT (datetime('now')),
+          UNIQUE(captain_id, sales_date)
+        );
+        INSERT INTO finance_invoice_postings_new (id, captain_id, total_invoices, transfers_debts, sales_date, posted_at)
+        SELECT id, captain_id, total_invoices, transfers_debts,
+          COALESCE(NULLIF(sales_date, ''), substr(posted_at, 1, 10)),
+          posted_at
+        FROM finance_invoice_postings;
+        DROP TABLE finance_invoice_postings;
+        ALTER TABLE finance_invoice_postings_new RENAME TO finance_invoice_postings;
+      `);
+    }
+
+    const storeIndexes = sqlite.prepare('PRAGMA index_list(captain_store_invoices)').all();
+    if (storeIndexes.some(i => i.unique)) {
+      sqlite.exec(`
+        CREATE TABLE IF NOT EXISTS captain_store_invoices_new (
+          id TEXT PRIMARY KEY,
+          captain_id TEXT NOT NULL REFERENCES captains(id) ON DELETE CASCADE,
+          store_id TEXT NOT NULL REFERENCES finance_stores(id) ON DELETE CASCADE,
+          amount REAL NOT NULL DEFAULT 0,
+          sales_date TEXT NOT NULL,
+          created_at TEXT DEFAULT (datetime('now')),
+          UNIQUE(captain_id, store_id, sales_date)
+        );
+        INSERT INTO captain_store_invoices_new (id, captain_id, store_id, amount, sales_date, created_at)
+        SELECT id, captain_id, store_id, amount,
+          COALESCE(NULLIF(sales_date, ''), '${today}'),
+          created_at
+        FROM captain_store_invoices;
+        DROP TABLE captain_store_invoices;
+        ALTER TABLE captain_store_invoices_new RENAME TO captain_store_invoices;
+      `);
+    }
+  }
+}
+
 export async function migrateFinanceVoucherDateColumn() {
   if (isMySQL) {
     const cols = await queryAll("SHOW COLUMNS FROM finance_vouchers LIKE 'voucher_date'");

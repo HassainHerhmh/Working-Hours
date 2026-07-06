@@ -6,7 +6,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
-import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn, migrateShiftPeriodColumns, migrateShiftReminderTable, migrateAttendanceTable, migrateFinanceTables, migrateFinanceVouchersTable, migrateFinanceInvoicePostingsTable, migrateFinanceInvoiceSalesDateColumn, migrateFinanceCommissionPostingsTable, migrateFinanceCommissionSalesDateColumn, migrateFinanceVoucherDateColumn, toDbDateTime } from './database.js';
+import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn, migrateShiftPeriodColumns, migrateShiftReminderTable, migrateAttendanceTable, migrateFinanceTables, migrateFinanceVouchersTable, migrateFinanceInvoicePostingsTable, migrateFinanceInvoiceSalesDateColumn, migrateFinanceInvoicePerDate, migrateFinanceCommissionPostingsTable, migrateFinanceCommissionSalesDateColumn, migrateFinanceVoucherDateColumn, toDbDateTime } from './database.js';
 import * as smsGw from './smsGateway.service.js';
 import * as shiftReminder from './shiftReminder.service.js';
 import * as attendance from './attendance.service.js';
@@ -121,6 +121,7 @@ async function seedIfEmpty() {
   await migrateFinanceVouchersTable();
   await migrateFinanceInvoicePostingsTable();
   await migrateFinanceInvoiceSalesDateColumn();
+  await migrateFinanceInvoicePerDate();
   await migrateFinanceCommissionPostingsTable();
   await migrateFinanceCommissionSalesDateColumn();
   await migrateFinanceVoucherDateColumn();
@@ -654,8 +655,8 @@ app.delete('/api/finance/stores/:id', async (req, res) => {
 
 app.get('/api/finance/captain/:captainId', async (req, res) => {
   try {
-    const { period, date } = req.query;
-    res.json(await finance.getCaptainFinance(req.params.captainId, { period, date }));
+    const { period, date, sales_date } = req.query;
+    res.json(await finance.getCaptainFinance(req.params.captainId, { period, date, sales_date }));
   } catch (err) {
     res.status(404).json({ error: err.message });
   }

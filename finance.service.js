@@ -61,23 +61,31 @@ function voucherInDateRange(v, from, to) {
   return key && key >= from && key <= to;
 }
 
-function buildPreviousBalance(range, posting, commissionPosting, allInvoices, allVouchers, config) {
+async function buildPreviousBalance(captainId, range, config, allVouchers) {
   const from = range.from;
   const priorVouchers = allVouchers.filter(v => voucherDateKey(v) < from);
-  const postingBefore = posting && postingSalesDateKey(posting) < from;
-  const commissionBefore = commissionPosting && commissionSalesDateKey(commissionPosting) < from;
 
-  if (!postingBefore && !commissionBefore && priorVouchers.length === 0) {
+  const invoiceRows = await queryAll(
+    'SELECT total_invoices, transfers_debts FROM finance_invoice_postings WHERE captain_id = ? AND sales_date < ?',
+    [captainId, from]
+  );
+  const commissionRows = await queryAll(
+    'SELECT total_commission, rent FROM finance_commission_postings WHERE captain_id = ? AND sales_date < ?',
+    [captainId, from]
+  );
+
+  const total_invoices = invoiceRows.reduce((s, r) => s + num(r.total_invoices), 0);
+  const transfers_debts = invoiceRows.reduce((s, r) => s + num(r.transfers_debts), 0);
+  const total_commission = commissionRows.reduce((s, r) => s + num(r.total_commission), 0);
+  const rent = commissionRows.reduce((s, r) => s + num(r.rent), 0);
+
+  if (!total_invoices && !transfers_debts && !total_commission && !rent && priorVouchers.length === 0) {
     return null;
   }
 
-  const invoices = postingBefore ? allInvoices : [];
+  const invoices = total_invoices > 0 ? [{ amount: total_invoices }] : [];
   const summary = buildFinanceSummary(
-    {
-      transfers_debts: postingBefore ? num(posting.transfers_debts) : 0,
-      rent: commissionBefore ? num(commissionPosting.rent) : 0,
-      total_commission: commissionBefore ? num(commissionPosting.total_commission) : 0,
-    },
+    { transfers_debts, rent, total_commission },
     invoices,
     config,
     priorVouchers
@@ -210,14 +218,27 @@ async function getCaptainFinanceRow(captainId) {
   return row;
 }
 
-async function getCaptainInvoices(captainId) {
-  return queryAll(`
-    SELECT i.id, i.store_id, i.amount, s.name AS store_name
+async function getCaptainInvoices(captainId, dateFilter) {
+  let sql = `
+    SELECT i.id, i.store_id, i.amount, i.sales_date, s.name AS store_name
     FROM captain_store_invoices i
     JOIN finance_stores s ON s.id = i.store_id
-    WHERE i.captain_id = ?
-    ORDER BY s.name
-  `, [captainId]);
+    WHERE i.captain_id = ?`;
+  const params = [captainId];
+
+  if (typeof dateFilter === 'string') {
+    sql += ' AND i.sales_date = ?';
+    params.push(dateFilter);
+  } else if (dateFilter?.from && dateFilter?.to) {
+    sql += ' AND i.sales_date >= ? AND i.sales_date <= ?';
+    params.push(dateFilter.from, dateFilter.to);
+  } else if (dateFilter?.before) {
+    sql += ' AND i.sales_date < ?';
+    params.push(dateFilter.before);
+  }
+
+  sql += ' ORDER BY s.name';
+  return queryAll(sql, params);
 }
 
 async function getCaptainVouchers(captainId) {
@@ -227,68 +248,68 @@ async function getCaptainVouchers(captainId) {
   );
 }
 
-export async function getCaptainFinance(captainId, { period, date } = {}) {
+export async function getCaptainFinance(captainId, { period, date, sales_date } = {}) {
   const captain = await queryOne('SELECT id, name, captain_number FROM captains WHERE id = ?', [captainId]);
   if (!captain) throw new Error('الكابتن غير موجود');
 
   const finance = await getCaptainFinanceRow(captainId);
-  const allInvoices = await getCaptainInvoices(captainId);
   const allVouchers = await getCaptainVouchers(captainId);
-  const posting = await queryOne(
-    'SELECT * FROM finance_invoice_postings WHERE captain_id = ?',
-    [captainId]
-  );
-  const commissionPosting = await queryOne(
-    'SELECT * FROM finance_commission_postings WHERE captain_id = ?',
-    [captainId]
-  );
   const config = await getFinanceConfig();
+  const normalizedSalesDate = sales_date ? normalizeSalesDate(sales_date) : null;
 
   let range = null;
   if (period && ['day', 'week', 'month'].includes(period)) {
     range = getDateRange(period, date);
   }
 
-  let invoices = allInvoices;
-  let transfers_debts = num(finance?.transfers_debts);
+  let invoices = [];
+  let transfers_debts = 0;
   let rent = num(finance?.rent);
   let total_commission = num(finance?.total_commission);
-  let total_invoices = invoices.reduce((s, row) => s + num(row.amount), 0);
+  let total_invoices = 0;
   let vouchers = allVouchers;
   let previous_balance = null;
 
-  if (range) {
+  if (normalizedSalesDate) {
+    const posting = await queryOne(
+      'SELECT * FROM finance_invoice_postings WHERE captain_id = ? AND sales_date = ?',
+      [captainId, normalizedSalesDate]
+    );
+    invoices = await getCaptainInvoices(captainId, normalizedSalesDate);
+    transfers_debts = posting ? num(posting.transfers_debts) : 0;
+    total_invoices = posting
+      ? num(posting.total_invoices)
+      : invoices.reduce((s, row) => s + num(row.amount), 0);
+  } else if (range) {
     vouchers = allVouchers.filter(v => voucherInDateRange(v, range.from, range.to));
-    const postingInRange = postingInSalesRange(posting, range.from, range.to);
-    if (postingInRange) {
-      transfers_debts = num(posting.transfers_debts);
-      total_invoices = num(posting.total_invoices);
-      invoices = allInvoices;
-    } else {
-      transfers_debts = 0;
-      total_invoices = 0;
-      invoices = [];
-    }
 
-    const commissionInRange = commissionInSalesRange(commissionPosting, range.from, range.to);
-    if (commissionInRange) {
-      rent = num(commissionPosting.rent);
-      total_commission = num(commissionPosting.total_commission);
+    const postingsInRange = await queryAll(
+      'SELECT * FROM finance_invoice_postings WHERE captain_id = ? AND sales_date >= ? AND sales_date <= ?',
+      [captainId, range.from, range.to]
+    );
+    transfers_debts = postingsInRange.reduce((s, p) => s + num(p.transfers_debts), 0);
+    total_invoices = postingsInRange.reduce((s, p) => s + num(p.total_invoices), 0);
+    invoices = await getCaptainInvoices(captainId, { from: range.from, to: range.to });
+
+    const commissionInRange = await queryAll(
+      'SELECT * FROM finance_commission_postings WHERE captain_id = ? AND sales_date >= ? AND sales_date <= ?',
+      [captainId, range.from, range.to]
+    );
+    if (commissionInRange.length) {
+      rent = commissionInRange.reduce((s, p) => s + num(p.rent), 0);
+      total_commission = commissionInRange.reduce((s, p) => s + num(p.total_commission), 0);
     } else {
       rent = 0;
       total_commission = 0;
     }
 
     if (period === 'day' || period === 'week') {
-      previous_balance = buildPreviousBalance(
-        range,
-        posting,
-        commissionPosting,
-        allInvoices,
-        allVouchers,
-        config
-      );
+      previous_balance = await buildPreviousBalance(captainId, range, config, allVouchers);
     }
+  } else {
+    invoices = await getCaptainInvoices(captainId);
+    transfers_debts = num(finance?.transfers_debts);
+    total_invoices = invoices.reduce((s, row) => s + num(row.amount), 0);
   }
 
   const summary = buildFinanceSummary(
@@ -305,6 +326,7 @@ export async function getCaptainFinance(captainId, { period, date } = {}) {
     period: period || null,
     from: range?.from || null,
     to: range?.to || null,
+    sales_date: normalizedSalesDate,
     previous_balance,
     ...summary,
     total_invoices,
@@ -315,11 +337,12 @@ export async function saveCaptainFinance(captainId, data) {
   const captain = await queryOne('SELECT id FROM captains WHERE id = ?', [captainId]);
   if (!captain) throw new Error('الكابتن غير موجود');
 
+  const sales_date = normalizeSalesDate(data.sales_date);
+
   await getCaptainFinanceRow(captainId);
   await execute(
-    `UPDATE captain_finances SET transfers_debts = ?, rent = ?, total_commission = ? WHERE captain_id = ?`,
+    `UPDATE captain_finances SET rent = ?, total_commission = ? WHERE captain_id = ?`,
     [
-      num(data.transfers_debts),
       num(data.rent),
       num(data.total_commission),
       captainId,
@@ -327,21 +350,24 @@ export async function saveCaptainFinance(captainId, data) {
   );
 
   if (Array.isArray(data.invoices)) {
-    await execute('DELETE FROM captain_store_invoices WHERE captain_id = ?', [captainId]);
+    await execute(
+      'DELETE FROM captain_store_invoices WHERE captain_id = ? AND sales_date = ?',
+      [captainId, sales_date]
+    );
     let totalInvoices = 0;
     for (const inv of data.invoices) {
       const amount = num(inv.amount);
       if (!inv.store_id || amount <= 0) continue;
       totalInvoices += amount;
       await execute(
-        'INSERT INTO captain_store_invoices (id, captain_id, store_id, amount) VALUES (?, ?, ?, ?)',
-        [uuid(), captainId, inv.store_id, amount]
+        'INSERT INTO captain_store_invoices (id, captain_id, store_id, amount, sales_date) VALUES (?, ?, ?, ?, ?)',
+        [uuid(), captainId, inv.store_id, amount, sales_date]
       );
     }
-    await recordInvoicePosting(captainId, totalInvoices, num(data.transfers_debts), data.sales_date);
+    await recordInvoicePosting(captainId, totalInvoices, num(data.transfers_debts), sales_date);
   }
 
-  return getCaptainFinance(captainId);
+  return getCaptainFinance(captainId, { sales_date });
 }
 
 function normalizeSalesDate(value) {
@@ -354,14 +380,14 @@ async function recordInvoicePosting(captainId, totalInvoices, transfersDebts, sa
 
   const sales_date = normalizeSalesDate(salesDate);
   const existing = await queryOne(
-    'SELECT id FROM finance_invoice_postings WHERE captain_id = ?',
-    [captainId]
+    'SELECT id FROM finance_invoice_postings WHERE captain_id = ? AND sales_date = ?',
+    [captainId, sales_date]
   );
 
   if (existing) {
     await execute(
-      `UPDATE finance_invoice_postings SET total_invoices = ?, transfers_debts = ?, sales_date = ?, posted_at = ${isMySQL ? 'NOW()' : "datetime('now')"} WHERE captain_id = ?`,
-      [num(totalInvoices), num(transfersDebts), sales_date, captainId]
+      `UPDATE finance_invoice_postings SET total_invoices = ?, transfers_debts = ?, posted_at = ${isMySQL ? 'NOW()' : "datetime('now')"} WHERE id = ?`,
+      [num(totalInvoices), num(transfersDebts), existing.id]
     );
   } else {
     await execute(
@@ -384,13 +410,13 @@ export async function deleteInvoicePosting(postingId) {
   const posting = await queryOne('SELECT * FROM finance_invoice_postings WHERE id = ?', [postingId]);
   if (!posting) throw new Error('سجل الترحيل غير موجود');
 
-  await execute('DELETE FROM captain_store_invoices WHERE captain_id = ?', [posting.captain_id]);
+  const salesDate = posting.sales_date || toDateKey(posting.posted_at);
   await execute(
-    'UPDATE captain_finances SET transfers_debts = 0 WHERE captain_id = ?',
-    [posting.captain_id]
+    'DELETE FROM captain_store_invoices WHERE captain_id = ? AND sales_date = ?',
+    [posting.captain_id, salesDate]
   );
   await execute('DELETE FROM finance_invoice_postings WHERE id = ?', [postingId]);
-  return { ok: true, captain_id: posting.captain_id };
+  return { ok: true, captain_id: posting.captain_id, sales_date: salesDate };
 }
 
 async function recordCommissionPosting(captainId, totalCommission, rent, salesDate) {

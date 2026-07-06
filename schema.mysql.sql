@@ -133,8 +133,9 @@ CREATE TABLE IF NOT EXISTS captain_store_invoices (
   captain_id VARCHAR(36) NOT NULL,
   store_id VARCHAR(36) NOT NULL,
   amount DECIMAL(12,2) NOT NULL DEFAULT 0,
+  sales_date VARCHAR(10) NOT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE KEY uniq_captain_store (captain_id, store_id),
+  UNIQUE KEY uniq_captain_store_date (captain_id, store_id, sales_date),
   FOREIGN KEY (captain_id) REFERENCES captains(id) ON DELETE CASCADE,
   FOREIGN KEY (store_id) REFERENCES finance_stores(id) ON DELETE CASCADE
 );
@@ -152,11 +153,12 @@ CREATE TABLE IF NOT EXISTS finance_vouchers (
 
 CREATE TABLE IF NOT EXISTS finance_invoice_postings (
   id VARCHAR(36) PRIMARY KEY,
-  captain_id VARCHAR(36) NOT NULL UNIQUE,
+  captain_id VARCHAR(36) NOT NULL,
   total_invoices DECIMAL(12,2) NOT NULL DEFAULT 0,
   transfers_debts DECIMAL(12,2) NOT NULL DEFAULT 0,
   sales_date VARCHAR(10) NOT NULL,
   posted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_captain_invoice_sales_date (captain_id, sales_date),
   FOREIGN KEY (captain_id) REFERENCES captains(id) ON DELETE CASCADE
 );
 
