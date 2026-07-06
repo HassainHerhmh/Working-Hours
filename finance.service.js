@@ -31,10 +31,20 @@ function dayBeforeKey(dateKey) {
   return yemenDateKey(dt);
 }
 
+function postingSalesDateKey(posting) {
+  if (!posting) return '';
+  return posting.sales_date || toDateKey(posting.posted_at);
+}
+
+function postingInSalesRange(posting, from, to) {
+  const key = postingSalesDateKey(posting);
+  return key && key >= from && key <= to;
+}
+
 function buildPreviousBalance(range, posting, commissionPosting, allInvoices, allVouchers, config) {
   const from = range.from;
   const priorVouchers = allVouchers.filter(v => isBeforeDate(v.created_at, from));
-  const postingBefore = posting && isBeforeDate(posting.posted_at, from);
+  const postingBefore = posting && postingSalesDateKey(posting) < from;
   const commissionBefore = commissionPosting && isBeforeDate(commissionPosting.posted_at, from);
 
   if (!postingBefore && !commissionBefore && priorVouchers.length === 0) {
@@ -228,7 +238,7 @@ export async function getCaptainFinance(captainId, { period, date } = {}) {
 
   if (range) {
     vouchers = allVouchers.filter(v => inDateRange(v.created_at, range.from, range.to));
-    const postingInRange = posting && inDateRange(posting.posted_at, range.from, range.to);
+    const postingInRange = postingInSalesRange(posting, range.from, range.to);
     if (postingInRange) {
       transfers_debts = num(posting.transfers_debts);
       total_invoices = num(posting.total_invoices);
@@ -308,15 +318,21 @@ export async function saveCaptainFinance(captainId, data) {
         [uuid(), captainId, inv.store_id, amount]
       );
     }
-    await recordInvoicePosting(captainId, totalInvoices, num(data.transfers_debts));
+    await recordInvoicePosting(captainId, totalInvoices, num(data.transfers_debts), data.sales_date);
   }
 
   return getCaptainFinance(captainId);
 }
 
-async function recordInvoicePosting(captainId, totalInvoices, transfersDebts) {
+function normalizeSalesDate(value) {
+  const key = String(value || yemenDateKey()).slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(key) ? key : yemenDateKey();
+}
+
+async function recordInvoicePosting(captainId, totalInvoices, transfersDebts, salesDate) {
   if (totalInvoices <= 0 && transfersDebts <= 0) return;
 
+  const sales_date = normalizeSalesDate(salesDate);
   const existing = await queryOne(
     'SELECT id FROM finance_invoice_postings WHERE captain_id = ?',
     [captainId]
@@ -324,13 +340,13 @@ async function recordInvoicePosting(captainId, totalInvoices, transfersDebts) {
 
   if (existing) {
     await execute(
-      `UPDATE finance_invoice_postings SET total_invoices = ?, transfers_debts = ?, posted_at = ${isMySQL ? 'NOW()' : "datetime('now')"} WHERE captain_id = ?`,
-      [num(totalInvoices), num(transfersDebts), captainId]
+      `UPDATE finance_invoice_postings SET total_invoices = ?, transfers_debts = ?, sales_date = ?, posted_at = ${isMySQL ? 'NOW()' : "datetime('now')"} WHERE captain_id = ?`,
+      [num(totalInvoices), num(transfersDebts), sales_date, captainId]
     );
   } else {
     await execute(
-      'INSERT INTO finance_invoice_postings (id, captain_id, total_invoices, transfers_debts) VALUES (?, ?, ?, ?)',
-      [uuid(), captainId, num(totalInvoices), num(transfersDebts)]
+      'INSERT INTO finance_invoice_postings (id, captain_id, total_invoices, transfers_debts, sales_date) VALUES (?, ?, ?, ?, ?)',
+      [uuid(), captainId, num(totalInvoices), num(transfersDebts), sales_date]
     );
   }
 }

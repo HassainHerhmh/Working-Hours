@@ -154,6 +154,7 @@ CREATE TABLE IF NOT EXISTS finance_invoice_postings (
   captain_id VARCHAR(36) NOT NULL UNIQUE,
   total_invoices DECIMAL(12,2) NOT NULL DEFAULT 0,
   transfers_debts DECIMAL(12,2) NOT NULL DEFAULT 0,
+  sales_date VARCHAR(10) NOT NULL,
   posted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (captain_id) REFERENCES captains(id) ON DELETE CASCADE
 );

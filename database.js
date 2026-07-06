@@ -510,6 +510,30 @@ export async function migrateFinanceInvoicePostingsTable() {
   }
 }
 
+export async function migrateFinanceInvoiceSalesDateColumn() {
+  if (isMySQL) {
+    const cols = await queryAll("SHOW COLUMNS FROM finance_invoice_postings LIKE 'sales_date'");
+    if (!cols.length) {
+      await execute('ALTER TABLE finance_invoice_postings ADD COLUMN sales_date VARCHAR(10) NULL');
+    }
+  } else {
+    const cols = sqlite.prepare('PRAGMA table_info(finance_invoice_postings)').all();
+    if (!cols.some(c => c.name === 'sales_date')) {
+      sqlite.exec('ALTER TABLE finance_invoice_postings ADD COLUMN sales_date TEXT');
+    }
+  }
+
+  const rows = await queryAll(
+    'SELECT id, posted_at, sales_date FROM finance_invoice_postings WHERE sales_date IS NULL OR sales_date = ?',
+    ['']
+  );
+  for (const row of rows) {
+    const raw = String(row.posted_at || '');
+    const salesDate = raw.slice(0, 10) || new Date().toISOString().slice(0, 10);
+    await execute('UPDATE finance_invoice_postings SET sales_date = ? WHERE id = ?', [salesDate, row.id]);
+  }
+}
+
 export async function migrateFinanceCommissionPostingsTable() {
   if (isMySQL) {
     await execute(`
