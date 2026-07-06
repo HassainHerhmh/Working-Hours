@@ -138,6 +138,12 @@ export function buildFinanceSummary(finance, invoices, config, vouchers = []) {
     vouchers: vouchers.map(v => ({
       id: v.id,
       voucher_type: v.voucher_type,
+      transfer_group_id: v.transfer_group_id || null,
+      transfer_role: v.transfer_group_id
+        ? (v.voucher_type === 'disbursement' ? 'from' : 'to')
+        : null,
+      counterpart_name: v.counterpart_name || '',
+      counterpart_number: v.counterpart_number || '',
       amount: num(v.amount),
       note: v.note || '',
       voucher_date: voucherDateKey(v),
@@ -243,7 +249,11 @@ async function getCaptainInvoices(captainId, dateFilter) {
 
 async function getCaptainVouchers(captainId) {
   return queryAll(
-    'SELECT * FROM finance_vouchers WHERE captain_id = ? ORDER BY created_at DESC',
+    `SELECT v.*, tc.name AS counterpart_name, tc.captain_number AS counterpart_number
+     FROM finance_vouchers v
+     LEFT JOIN captains tc ON tc.id = v.counterpart_captain_id
+     WHERE v.captain_id = ?
+     ORDER BY v.created_at DESC`,
     [captainId]
   );
 }
@@ -596,7 +606,7 @@ function normalizeVoucherList(rows) {
   const seenTransfers = new Set();
   for (const v of rows) {
     if (v.transfer_group_id) {
-      if (v.voucher_type !== 'receipt') continue;
+      if (v.voucher_type !== 'disbursement') continue;
       if (seenTransfers.has(v.transfer_group_id)) continue;
       seenTransfers.add(v.transfer_group_id);
       out.push(mapTransferRow(v));
@@ -630,24 +640,24 @@ export async function createTransferVoucher({ from_captain_id, to_captain_id, am
   const dateKey = normalizeSalesDate(voucher_date);
   const transferNote = buildTransferNote(note, fromCaptain.name, toCaptain.name);
   const groupId = uuid();
-  const receiptId = uuid();
-  const disbursementId = uuid();
+  const fromVoucherId = uuid();
+  const toVoucherId = uuid();
 
-  await execute(
-    `INSERT INTO finance_vouchers
-      (id, captain_id, voucher_type, amount, note, voucher_date, transfer_group_id, counterpart_captain_id)
-     VALUES (?, ?, 'receipt', ?, ?, ?, ?, ?)`,
-    [receiptId, from_captain_id, amt, transferNote, dateKey, groupId, to_captain_id]
-  );
   await execute(
     `INSERT INTO finance_vouchers
       (id, captain_id, voucher_type, amount, note, voucher_date, transfer_group_id, counterpart_captain_id)
      VALUES (?, ?, 'disbursement', ?, ?, ?, ?, ?)`,
-    [disbursementId, to_captain_id, amt, transferNote, dateKey, groupId, from_captain_id]
+    [fromVoucherId, from_captain_id, amt, transferNote, dateKey, groupId, to_captain_id]
+  );
+  await execute(
+    `INSERT INTO finance_vouchers
+      (id, captain_id, voucher_type, amount, note, voucher_date, transfer_group_id, counterpart_captain_id)
+     VALUES (?, ?, 'receipt', ?, ?, ?, ?, ?)`,
+    [toVoucherId, to_captain_id, amt, transferNote, dateKey, groupId, from_captain_id]
   );
 
   const row = await queryOne(
-    `${voucherListSql} WHERE v.transfer_group_id = ? AND v.voucher_type = 'receipt'`,
+    `${voucherListSql} WHERE v.transfer_group_id = ? AND v.voucher_type = 'disbursement'`,
     [groupId]
   );
   return mapTransferRow(row);
@@ -677,18 +687,18 @@ export async function updateTransferVoucher(groupId, { from_captain_id, to_capta
   await execute(
     `UPDATE finance_vouchers
      SET captain_id = ?, amount = ?, note = ?, voucher_date = ?, counterpart_captain_id = ?
-     WHERE transfer_group_id = ? AND voucher_type = 'receipt'`,
+     WHERE transfer_group_id = ? AND voucher_type = 'disbursement'`,
     [from_captain_id, amt, transferNote, dateKey, to_captain_id, groupId]
   );
   await execute(
     `UPDATE finance_vouchers
      SET captain_id = ?, amount = ?, note = ?, voucher_date = ?, counterpart_captain_id = ?
-     WHERE transfer_group_id = ? AND voucher_type = 'disbursement'`,
+     WHERE transfer_group_id = ? AND voucher_type = 'receipt'`,
     [to_captain_id, amt, transferNote, dateKey, from_captain_id, groupId]
   );
 
   const row = await queryOne(
-    `${voucherListSql} WHERE v.transfer_group_id = ? AND v.voucher_type = 'receipt'`,
+    `${voucherListSql} WHERE v.transfer_group_id = ? AND v.voucher_type = 'disbursement'`,
     [groupId]
   );
   return mapTransferRow(row);

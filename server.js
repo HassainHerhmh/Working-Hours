@@ -6,7 +6,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
-import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn, migrateShiftPeriodColumns, migrateShiftReminderTable, migrateAttendanceTable, migrateFinanceTables, migrateFinanceVouchersTable, migrateFinanceInvoicePostingsTable, migrateFinanceInvoiceSalesDateColumn, migrateFinanceInvoicePerDate, migrateFinanceCommissionPostingsTable, migrateFinanceCommissionSalesDateColumn, migrateFinanceCommissionPerDate, migrateFinanceVoucherDateColumn, migrateFinanceVoucherTransferColumns, toDbDateTime } from './database.js';
+import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn, migrateShiftPeriodColumns, migrateShiftReminderTable, migrateAttendanceTable, migrateFinanceTables, migrateFinanceVouchersTable, migrateFinanceInvoicePostingsTable, migrateFinanceInvoiceSalesDateColumn, migrateFinanceInvoicePerDate, migrateFinanceCommissionPostingsTable, migrateFinanceCommissionSalesDateColumn, migrateFinanceCommissionPerDate, migrateFinanceVoucherDateColumn, migrateFinanceVoucherTransferColumns, migrateFixTransferVoucherTypes, toDbDateTime } from './database.js';
 import * as smsGw from './smsGateway.service.js';
 import * as shiftReminder from './shiftReminder.service.js';
 import * as attendance from './attendance.service.js';
@@ -127,6 +127,7 @@ async function seedIfEmpty() {
   await migrateFinanceCommissionPerDate();
   await migrateFinanceVoucherDateColumn();
   await migrateFinanceVoucherTransferColumns();
+  await migrateFixTransferVoucherTypes();
   const captainCount = Number((await queryOne('SELECT COUNT(*) as c FROM captains')).c);
   if (captainCount === 0) {
     const captains = [

@@ -871,6 +871,42 @@ export async function migrateFinanceVoucherTransferColumns() {
   }
 }
 
+export async function migrateFixTransferVoucherTypes() {
+  if (isMySQL) {
+    const cols = await queryAll("SHOW COLUMNS FROM finance_config LIKE 'transfer_voucher_fix_done'");
+    if (!cols.length) {
+      await execute('ALTER TABLE finance_config ADD COLUMN transfer_voucher_fix_done TINYINT(1) NOT NULL DEFAULT 0');
+    }
+  } else {
+    const cols = sqlite.prepare('PRAGMA table_info(finance_config)').all();
+    if (!cols.some(c => c.name === 'transfer_voucher_fix_done')) {
+      sqlite.exec('ALTER TABLE finance_config ADD COLUMN transfer_voucher_fix_done INTEGER NOT NULL DEFAULT 0');
+    }
+  }
+
+  const cfg = await queryOne('SELECT transfer_voucher_fix_done FROM finance_config WHERE id = 1');
+  if (cfg?.transfer_voucher_fix_done) return;
+
+  const groups = await queryAll(
+    `SELECT DISTINCT transfer_group_id FROM finance_vouchers
+     WHERE transfer_group_id IS NOT NULL AND transfer_group_id != ''`
+  );
+  for (const { transfer_group_id } of groups) {
+    const rows = await queryAll(
+      'SELECT id, voucher_type FROM finance_vouchers WHERE transfer_group_id = ?',
+      [transfer_group_id]
+    );
+    if (rows.length !== 2) continue;
+    const receipt = rows.find(r => r.voucher_type === 'receipt');
+    const disbursement = rows.find(r => r.voucher_type === 'disbursement');
+    if (!receipt || !disbursement) continue;
+    await execute("UPDATE finance_vouchers SET voucher_type = 'disbursement' WHERE id = ?", [receipt.id]);
+    await execute("UPDATE finance_vouchers SET voucher_type = 'receipt' WHERE id = ?", [disbursement.id]);
+  }
+
+  await execute('UPDATE finance_config SET transfer_voucher_fix_done = 1 WHERE id = 1');
+}
+
 export async function migrateFinanceVoucherDateColumn() {
   if (isMySQL) {
     const cols = await queryAll("SHOW COLUMNS FROM finance_vouchers LIKE 'voucher_date'");
