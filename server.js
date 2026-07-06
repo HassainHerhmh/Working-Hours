@@ -6,7 +6,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
-import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn, migrateShiftPeriodColumns, migrateShiftReminderTable, migrateAttendanceTable, migrateFinanceTables, migrateFinanceVouchersTable, toDbDateTime } from './database.js';
+import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn, migrateShiftPeriodColumns, migrateShiftReminderTable, migrateAttendanceTable, migrateFinanceTables, migrateFinanceVouchersTable, migrateFinanceInvoicePostingsTable, toDbDateTime } from './database.js';
 import * as smsGw from './smsGateway.service.js';
 import * as shiftReminder from './shiftReminder.service.js';
 import * as attendance from './attendance.service.js';
@@ -119,6 +119,7 @@ async function seedIfEmpty() {
   await migrateAttendanceTable();
   await migrateFinanceTables();
   await migrateFinanceVouchersTable();
+  await migrateFinanceInvoicePostingsTable();
   const captainCount = Number((await queryOne('SELECT COUNT(*) as c FROM captains')).c);
   if (captainCount === 0) {
     const captains = [
@@ -679,6 +680,10 @@ app.post('/api/finance/captain/:captainId/vouchers', async (req, res) => {
 app.delete('/api/finance/vouchers/:id', async (req, res) => {
   await finance.deleteVoucher(req.params.id);
   res.json({ ok: true });
+});
+
+app.get('/api/finance/invoice-postings', async (_, res) => {
+  res.json(await finance.listInvoicePostings());
 });
 
 // ─── Attendance ─────────────────────────────────────────────

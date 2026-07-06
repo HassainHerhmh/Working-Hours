@@ -3,6 +3,7 @@ import Database from 'better-sqlite3';
 import { fileURLToPath } from 'url';
 import path from 'path';
 import fs from 'fs';
+import { v4 as uuid } from 'uuid';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -459,6 +460,53 @@ export async function migrateFinanceVouchersTable() {
         created_at TEXT DEFAULT (datetime('now'))
       )
     `);
+  }
+}
+
+export async function migrateFinanceInvoicePostingsTable() {
+  if (isMySQL) {
+    await execute(`
+      CREATE TABLE IF NOT EXISTS finance_invoice_postings (
+        id VARCHAR(36) PRIMARY KEY,
+        captain_id VARCHAR(36) NOT NULL UNIQUE,
+        total_invoices DECIMAL(12,2) NOT NULL DEFAULT 0,
+        transfers_debts DECIMAL(12,2) NOT NULL DEFAULT 0,
+        posted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (captain_id) REFERENCES captains(id) ON DELETE CASCADE
+      )
+    `);
+  } else {
+    sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS finance_invoice_postings (
+        id TEXT PRIMARY KEY,
+        captain_id TEXT NOT NULL UNIQUE REFERENCES captains(id) ON DELETE CASCADE,
+        total_invoices REAL NOT NULL DEFAULT 0,
+        transfers_debts REAL NOT NULL DEFAULT 0,
+        posted_at TEXT DEFAULT (datetime('now'))
+      )
+    `);
+  }
+
+  const rows = await queryAll(`
+    SELECT cf.captain_id, cf.transfers_debts,
+      COALESCE(SUM(i.amount), 0) AS total_invoices
+    FROM captain_finances cf
+    LEFT JOIN captain_store_invoices i ON i.captain_id = cf.captain_id
+    GROUP BY cf.captain_id, cf.transfers_debts
+    HAVING total_invoices > 0 OR cf.transfers_debts > 0
+  `);
+
+  for (const row of rows) {
+    const exists = await queryOne(
+      'SELECT id FROM finance_invoice_postings WHERE captain_id = ?',
+      [row.captain_id]
+    );
+    if (!exists) {
+      await execute(
+        'INSERT INTO finance_invoice_postings (id, captain_id, total_invoices, transfers_debts) VALUES (?, ?, ?, ?)',
+        [uuid(), row.captain_id, row.total_invoices, row.transfers_debts]
+      );
+    }
   }
 }
 

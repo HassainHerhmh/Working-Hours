@@ -168,17 +168,50 @@ export async function saveCaptainFinance(captainId, data) {
 
   if (Array.isArray(data.invoices)) {
     await execute('DELETE FROM captain_store_invoices WHERE captain_id = ?', [captainId]);
+    let totalInvoices = 0;
     for (const inv of data.invoices) {
       const amount = num(inv.amount);
       if (!inv.store_id || amount <= 0) continue;
+      totalInvoices += amount;
       await execute(
         'INSERT INTO captain_store_invoices (id, captain_id, store_id, amount) VALUES (?, ?, ?, ?)',
         [uuid(), captainId, inv.store_id, amount]
       );
     }
+    await recordInvoicePosting(captainId, totalInvoices, num(data.transfers_debts));
   }
 
   return getCaptainFinance(captainId);
+}
+
+async function recordInvoicePosting(captainId, totalInvoices, transfersDebts) {
+  if (totalInvoices <= 0 && transfersDebts <= 0) return;
+
+  const existing = await queryOne(
+    'SELECT id FROM finance_invoice_postings WHERE captain_id = ?',
+    [captainId]
+  );
+
+  if (existing) {
+    await execute(
+      `UPDATE finance_invoice_postings SET total_invoices = ?, transfers_debts = ?, posted_at = ${isMySQL ? 'NOW()' : "datetime('now')"} WHERE captain_id = ?`,
+      [num(totalInvoices), num(transfersDebts), captainId]
+    );
+  } else {
+    await execute(
+      'INSERT INTO finance_invoice_postings (id, captain_id, total_invoices, transfers_debts) VALUES (?, ?, ?, ?)',
+      [uuid(), captainId, num(totalInvoices), num(transfersDebts)]
+    );
+  }
+}
+
+export async function listInvoicePostings() {
+  return queryAll(`
+    SELECT p.*, c.name AS captain_name, c.captain_number
+    FROM finance_invoice_postings p
+    JOIN captains c ON c.id = p.captain_id
+    ORDER BY p.posted_at DESC
+  `);
 }
 
 export async function createVoucher(captainId, { voucher_type, amount, note }) {
