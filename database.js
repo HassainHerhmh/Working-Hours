@@ -578,6 +578,52 @@ export async function migrateFinanceCommissionPostingsTable() {
   }
 }
 
+export async function migrateFinanceCommissionSalesDateColumn() {
+  if (isMySQL) {
+    const cols = await queryAll("SHOW COLUMNS FROM finance_commission_postings LIKE 'sales_date'");
+    if (!cols.length) {
+      await execute('ALTER TABLE finance_commission_postings ADD COLUMN sales_date VARCHAR(10) NULL');
+    }
+  } else {
+    const cols = sqlite.prepare('PRAGMA table_info(finance_commission_postings)').all();
+    if (!cols.some(c => c.name === 'sales_date')) {
+      sqlite.exec('ALTER TABLE finance_commission_postings ADD COLUMN sales_date TEXT');
+    }
+  }
+
+  const rows = await queryAll(
+    'SELECT id, posted_at, sales_date FROM finance_commission_postings WHERE sales_date IS NULL OR sales_date = ?',
+    ['']
+  );
+  for (const row of rows) {
+    const salesDate = String(row.posted_at || '').slice(0, 10) || new Date().toISOString().slice(0, 10);
+    await execute('UPDATE finance_commission_postings SET sales_date = ? WHERE id = ?', [salesDate, row.id]);
+  }
+}
+
+export async function migrateFinanceVoucherDateColumn() {
+  if (isMySQL) {
+    const cols = await queryAll("SHOW COLUMNS FROM finance_vouchers LIKE 'voucher_date'");
+    if (!cols.length) {
+      await execute('ALTER TABLE finance_vouchers ADD COLUMN voucher_date VARCHAR(10) NULL');
+    }
+  } else {
+    const cols = sqlite.prepare('PRAGMA table_info(finance_vouchers)').all();
+    if (!cols.some(c => c.name === 'voucher_date')) {
+      sqlite.exec('ALTER TABLE finance_vouchers ADD COLUMN voucher_date TEXT');
+    }
+  }
+
+  const rows = await queryAll(
+    'SELECT id, created_at, voucher_date FROM finance_vouchers WHERE voucher_date IS NULL OR voucher_date = ?',
+    ['']
+  );
+  for (const row of rows) {
+    const voucherDate = String(row.created_at || '').slice(0, 10) || new Date().toISOString().slice(0, 10);
+    await execute('UPDATE finance_vouchers SET voucher_date = ? WHERE id = ?', [voucherDate, row.id]);
+  }
+}
+
 export async function migrateCaptainUsernameColumn() {
   if (isMySQL) {
     const cols = await queryAll("SHOW COLUMNS FROM captains LIKE 'username'");

@@ -145,6 +145,7 @@ CREATE TABLE IF NOT EXISTS finance_vouchers (
   voucher_type VARCHAR(20) NOT NULL,
   amount DECIMAL(12,2) NOT NULL,
   note VARCHAR(500) DEFAULT '',
+  voucher_date VARCHAR(10) NOT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (captain_id) REFERENCES captains(id) ON DELETE CASCADE
 );
@@ -164,6 +165,7 @@ CREATE TABLE IF NOT EXISTS finance_commission_postings (
   captain_id VARCHAR(36) NOT NULL UNIQUE,
   total_commission DECIMAL(12,2) NOT NULL DEFAULT 0,
   rent DECIMAL(12,2) NOT NULL DEFAULT 0,
+  sales_date VARCHAR(10) NOT NULL,
   posted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (captain_id) REFERENCES captains(id) ON DELETE CASCADE
 );

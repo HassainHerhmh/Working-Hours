@@ -6,7 +6,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
-import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn, migrateShiftPeriodColumns, migrateShiftReminderTable, migrateAttendanceTable, migrateFinanceTables, migrateFinanceVouchersTable, migrateFinanceInvoicePostingsTable, migrateFinanceInvoiceSalesDateColumn, migrateFinanceCommissionPostingsTable, toDbDateTime } from './database.js';
+import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn, migrateShiftPeriodColumns, migrateShiftReminderTable, migrateAttendanceTable, migrateFinanceTables, migrateFinanceVouchersTable, migrateFinanceInvoicePostingsTable, migrateFinanceInvoiceSalesDateColumn, migrateFinanceCommissionPostingsTable, migrateFinanceCommissionSalesDateColumn, migrateFinanceVoucherDateColumn, toDbDateTime } from './database.js';
 import * as smsGw from './smsGateway.service.js';
 import * as shiftReminder from './shiftReminder.service.js';
 import * as attendance from './attendance.service.js';
@@ -122,6 +122,8 @@ async function seedIfEmpty() {
   await migrateFinanceInvoicePostingsTable();
   await migrateFinanceInvoiceSalesDateColumn();
   await migrateFinanceCommissionPostingsTable();
+  await migrateFinanceCommissionSalesDateColumn();
+  await migrateFinanceVoucherDateColumn();
   const captainCount = Number((await queryOne('SELECT COUNT(*) as c FROM captains')).c);
   if (captainCount === 0) {
     const captains = [
@@ -683,6 +685,14 @@ app.post('/api/finance/captain/:captainId/vouchers', async (req, res) => {
 app.delete('/api/finance/vouchers/:id', async (req, res) => {
   await finance.deleteVoucher(req.params.id);
   res.json({ ok: true });
+});
+
+app.put('/api/finance/vouchers/:id', async (req, res) => {
+  try {
+    res.json(await finance.updateVoucher(req.params.id, req.body));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 app.get('/api/finance/invoice-postings', async (_, res) => {

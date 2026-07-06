@@ -41,11 +41,31 @@ function postingInSalesRange(posting, from, to) {
   return key && key >= from && key <= to;
 }
 
+function commissionSalesDateKey(posting) {
+  if (!posting) return '';
+  return posting.sales_date || toDateKey(posting.posted_at);
+}
+
+function commissionInSalesRange(posting, from, to) {
+  const key = commissionSalesDateKey(posting);
+  return key && key >= from && key <= to;
+}
+
+function voucherDateKey(v) {
+  if (!v) return '';
+  return v.voucher_date || toDateKey(v.created_at);
+}
+
+function voucherInDateRange(v, from, to) {
+  const key = voucherDateKey(v);
+  return key && key >= from && key <= to;
+}
+
 function buildPreviousBalance(range, posting, commissionPosting, allInvoices, allVouchers, config) {
   const from = range.from;
-  const priorVouchers = allVouchers.filter(v => isBeforeDate(v.created_at, from));
+  const priorVouchers = allVouchers.filter(v => voucherDateKey(v) < from);
   const postingBefore = posting && postingSalesDateKey(posting) < from;
-  const commissionBefore = commissionPosting && isBeforeDate(commissionPosting.posted_at, from);
+  const commissionBefore = commissionPosting && commissionSalesDateKey(commissionPosting) < from;
 
   if (!postingBefore && !commissionBefore && priorVouchers.length === 0) {
     return null;
@@ -112,6 +132,7 @@ export function buildFinanceSummary(finance, invoices, config, vouchers = []) {
       voucher_type: v.voucher_type,
       amount: num(v.amount),
       note: v.note || '',
+      voucher_date: voucherDateKey(v),
       created_at: v.created_at,
     })),
     invoices: invoices.map(row => ({
@@ -237,7 +258,7 @@ export async function getCaptainFinance(captainId, { period, date } = {}) {
   let previous_balance = null;
 
   if (range) {
-    vouchers = allVouchers.filter(v => inDateRange(v.created_at, range.from, range.to));
+    vouchers = allVouchers.filter(v => voucherInDateRange(v, range.from, range.to));
     const postingInRange = postingInSalesRange(posting, range.from, range.to);
     if (postingInRange) {
       transfers_debts = num(posting.transfers_debts);
@@ -249,8 +270,7 @@ export async function getCaptainFinance(captainId, { period, date } = {}) {
       invoices = [];
     }
 
-    const commissionInRange = commissionPosting
-      && inDateRange(commissionPosting.posted_at, range.from, range.to);
+    const commissionInRange = commissionInSalesRange(commissionPosting, range.from, range.to);
     if (commissionInRange) {
       rent = num(commissionPosting.rent);
       total_commission = num(commissionPosting.total_commission);
@@ -373,9 +393,10 @@ export async function deleteInvoicePosting(postingId) {
   return { ok: true, captain_id: posting.captain_id };
 }
 
-async function recordCommissionPosting(captainId, totalCommission, rent) {
+async function recordCommissionPosting(captainId, totalCommission, rent, salesDate) {
   if (totalCommission <= 0 && rent <= 0) return;
 
+  const sales_date = normalizeSalesDate(salesDate);
   const existing = await queryOne(
     'SELECT id FROM finance_commission_postings WHERE captain_id = ?',
     [captainId]
@@ -383,18 +404,18 @@ async function recordCommissionPosting(captainId, totalCommission, rent) {
 
   if (existing) {
     await execute(
-      `UPDATE finance_commission_postings SET total_commission = ?, rent = ?, posted_at = ${isMySQL ? 'NOW()' : "datetime('now')"} WHERE captain_id = ?`,
-      [num(totalCommission), num(rent), captainId]
+      `UPDATE finance_commission_postings SET total_commission = ?, rent = ?, sales_date = ?, posted_at = ${isMySQL ? 'NOW()' : "datetime('now')"} WHERE captain_id = ?`,
+      [num(totalCommission), num(rent), sales_date, captainId]
     );
   } else {
     await execute(
-      'INSERT INTO finance_commission_postings (id, captain_id, total_commission, rent) VALUES (?, ?, ?, ?)',
-      [uuid(), captainId, num(totalCommission), num(rent)]
+      'INSERT INTO finance_commission_postings (id, captain_id, total_commission, rent, sales_date) VALUES (?, ?, ?, ?, ?)',
+      [uuid(), captainId, num(totalCommission), num(rent), sales_date]
     );
   }
 }
 
-export async function saveCaptainCommission(captainId, { total_commission, rent }) {
+export async function saveCaptainCommission(captainId, { total_commission, rent, sales_date }) {
   const captain = await queryOne('SELECT id FROM captains WHERE id = ?', [captainId]);
   if (!captain) throw new Error('الكابتن غير موجود');
 
@@ -406,7 +427,7 @@ export async function saveCaptainCommission(captainId, { total_commission, rent 
     'UPDATE captain_finances SET rent = ?, total_commission = ? WHERE captain_id = ?',
     [rentAmount, totalCommission, captainId]
   );
-  await recordCommissionPosting(captainId, totalCommission, rentAmount);
+  await recordCommissionPosting(captainId, totalCommission, rentAmount, sales_date);
 
   return getCaptainFinance(captainId);
 }
@@ -432,7 +453,7 @@ export async function deleteCommissionPosting(postingId) {
   return { ok: true, captain_id: posting.captain_id };
 }
 
-export async function createVoucher(captainId, { voucher_type, amount, note }) {
+export async function createVoucher(captainId, { voucher_type, amount, note, voucher_date }) {
   const captain = await queryOne('SELECT id FROM captains WHERE id = ?', [captainId]);
   if (!captain) throw new Error('الكابتن غير موجود');
 
@@ -441,11 +462,28 @@ export async function createVoucher(captainId, { voucher_type, amount, note }) {
   if (amt <= 0) throw new Error('المبلغ يجب أن يكون أكبر من صفر');
 
   const id = uuid();
+  const dateKey = normalizeSalesDate(voucher_date);
   await execute(
-    'INSERT INTO finance_vouchers (id, captain_id, voucher_type, amount, note) VALUES (?, ?, ?, ?, ?)',
-    [id, captainId, type, amt, String(note || '').trim()]
+    'INSERT INTO finance_vouchers (id, captain_id, voucher_type, amount, note, voucher_date) VALUES (?, ?, ?, ?, ?, ?)',
+    [id, captainId, type, amt, String(note || '').trim(), dateKey]
   );
   return queryOne('SELECT * FROM finance_vouchers WHERE id = ?', [id]);
+}
+
+export async function updateVoucher(voucherId, { voucher_type, amount, note, voucher_date }) {
+  const row = await queryOne('SELECT * FROM finance_vouchers WHERE id = ?', [voucherId]);
+  if (!row) throw new Error('السند غير موجود');
+
+  const type = voucher_type === 'receipt' ? 'receipt' : 'disbursement';
+  const amt = num(amount);
+  if (amt <= 0) throw new Error('المبلغ يجب أن يكون أكبر من صفر');
+
+  const dateKey = normalizeSalesDate(voucher_date || row.voucher_date);
+  await execute(
+    'UPDATE finance_vouchers SET voucher_type = ?, amount = ?, note = ?, voucher_date = ? WHERE id = ?',
+    [type, amt, String(note || '').trim(), dateKey, voucherId]
+  );
+  return queryOne('SELECT * FROM finance_vouchers WHERE id = ?', [voucherId]);
 }
 
 export async function deleteVoucher(voucherId) {
