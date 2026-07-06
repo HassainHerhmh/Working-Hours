@@ -435,6 +435,33 @@ export async function migrateFinanceTables() {
   }
 }
 
+export async function migrateFinanceVouchersTable() {
+  if (isMySQL) {
+    await execute(`
+      CREATE TABLE IF NOT EXISTS finance_vouchers (
+        id VARCHAR(36) PRIMARY KEY,
+        captain_id VARCHAR(36) NOT NULL,
+        voucher_type VARCHAR(20) NOT NULL,
+        amount DECIMAL(12,2) NOT NULL,
+        note VARCHAR(500) DEFAULT '',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (captain_id) REFERENCES captains(id) ON DELETE CASCADE
+      )
+    `);
+  } else {
+    sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS finance_vouchers (
+        id TEXT PRIMARY KEY,
+        captain_id TEXT NOT NULL REFERENCES captains(id) ON DELETE CASCADE,
+        voucher_type TEXT NOT NULL CHECK(voucher_type IN ('disbursement', 'receipt')),
+        amount REAL NOT NULL,
+        note TEXT DEFAULT '',
+        created_at TEXT DEFAULT (datetime('now'))
+      )
+    `);
+  }
+}
+
 export async function migrateCaptainUsernameColumn() {
   if (isMySQL) {
     const cols = await queryAll("SHOW COLUMNS FROM captains LIKE 'username'");

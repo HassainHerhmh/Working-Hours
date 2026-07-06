@@ -5,7 +5,7 @@ function num(v) {
   return Math.round((Number(v) || 0) * 100) / 100;
 }
 
-export function buildFinanceSummary(finance, invoices, config) {
+export function buildFinanceSummary(finance, invoices, config, vouchers = []) {
   const total_invoices = invoices.reduce((s, row) => s + num(row.amount), 0);
   const transfers_debts = num(finance?.transfers_debts);
   const rent = num(finance?.rent);
@@ -14,8 +14,17 @@ export function buildFinanceSummary(finance, invoices, config) {
   const company_commission = num(total_commission * company_rate / 100);
   const captain_commission = num(total_commission - company_commission);
   const net_delivery_fees = num(total_commission - company_commission - rent);
+
+  const total_disbursement = vouchers
+    .filter(v => v.voucher_type === 'disbursement')
+    .reduce((s, v) => s + num(v.amount), 0);
+  const total_receipt = vouchers
+    .filter(v => v.voucher_type === 'receipt')
+    .reduce((s, v) => s + num(v.amount), 0);
+
   const remaining_for_company = num(
     total_invoices - transfers_debts + company_commission + rent
+    + total_disbursement - total_receipt
   );
 
   return {
@@ -27,7 +36,16 @@ export function buildFinanceSummary(finance, invoices, config) {
     company_commission,
     captain_commission,
     net_delivery_fees,
+    total_disbursement,
+    total_receipt,
     remaining_for_company,
+    vouchers: vouchers.map(v => ({
+      id: v.id,
+      voucher_type: v.voucher_type,
+      amount: num(v.amount),
+      note: v.note || '',
+      created_at: v.created_at,
+    })),
     invoices: invoices.map(row => ({
       id: row.id,
       store_id: row.store_id,
@@ -113,14 +131,22 @@ async function getCaptainInvoices(captainId) {
   `, [captainId]);
 }
 
+async function getCaptainVouchers(captainId) {
+  return queryAll(
+    'SELECT * FROM finance_vouchers WHERE captain_id = ? ORDER BY created_at DESC',
+    [captainId]
+  );
+}
+
 export async function getCaptainFinance(captainId) {
   const captain = await queryOne('SELECT id, name, captain_number FROM captains WHERE id = ?', [captainId]);
   if (!captain) throw new Error('الكابتن غير موجود');
 
   const finance = await getCaptainFinanceRow(captainId);
   const invoices = await getCaptainInvoices(captainId);
+  const vouchers = await getCaptainVouchers(captainId);
   const config = await getFinanceConfig();
-  const summary = buildFinanceSummary(finance, invoices, config);
+  const summary = buildFinanceSummary(finance, invoices, config, vouchers);
 
   return { captain, finance, config, ...summary };
 }
@@ -153,4 +179,29 @@ export async function saveCaptainFinance(captainId, data) {
   }
 
   return getCaptainFinance(captainId);
+}
+
+export async function createVoucher(captainId, { voucher_type, amount, note }) {
+  const captain = await queryOne('SELECT id FROM captains WHERE id = ?', [captainId]);
+  if (!captain) throw new Error('الكابتن غير موجود');
+
+  const type = voucher_type === 'receipt' ? 'receipt' : 'disbursement';
+  const amt = num(amount);
+  if (amt <= 0) throw new Error('المبلغ يجب أن يكون أكبر من صفر');
+
+  const id = uuid();
+  await execute(
+    'INSERT INTO finance_vouchers (id, captain_id, voucher_type, amount, note) VALUES (?, ?, ?, ?, ?)',
+    [id, captainId, type, amt, String(note || '').trim()]
+  );
+  return queryOne('SELECT * FROM finance_vouchers WHERE id = ?', [id]);
+}
+
+export async function deleteVoucher(voucherId) {
+  await execute('DELETE FROM finance_vouchers WHERE id = ?', [voucherId]);
+  return { ok: true };
+}
+
+export async function listCaptainVouchers(captainId) {
+  return getCaptainVouchers(captainId);
 }

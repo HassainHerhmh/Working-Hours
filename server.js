@@ -6,7 +6,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
-import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn, migrateShiftPeriodColumns, migrateShiftReminderTable, migrateAttendanceTable, migrateFinanceTables, toDbDateTime } from './database.js';
+import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn, migrateShiftPeriodColumns, migrateShiftReminderTable, migrateAttendanceTable, migrateFinanceTables, migrateFinanceVouchersTable, toDbDateTime } from './database.js';
 import * as smsGw from './smsGateway.service.js';
 import * as shiftReminder from './shiftReminder.service.js';
 import * as attendance from './attendance.service.js';
@@ -118,6 +118,7 @@ async function seedIfEmpty() {
   await migrateShiftReminderTable();
   await migrateAttendanceTable();
   await migrateFinanceTables();
+  await migrateFinanceVouchersTable();
   const captainCount = Number((await queryOne('SELECT COUNT(*) as c FROM captains')).c);
   if (captainCount === 0) {
     const captains = [
@@ -660,6 +661,24 @@ app.put('/api/finance/captain/:captainId', async (req, res) => {
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
+});
+
+app.get('/api/finance/captain/:captainId/vouchers', async (req, res) => {
+  res.json(await finance.listCaptainVouchers(req.params.captainId));
+});
+
+app.post('/api/finance/captain/:captainId/vouchers', async (req, res) => {
+  try {
+    const voucher = await finance.createVoucher(req.params.captainId, req.body);
+    res.status(201).json(voucher);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete('/api/finance/vouchers/:id', async (req, res) => {
+  await finance.deleteVoucher(req.params.id);
+  res.json({ ok: true });
 });
 
 // ─── Attendance ─────────────────────────────────────────────

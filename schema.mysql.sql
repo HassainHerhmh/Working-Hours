@@ -138,3 +138,13 @@ CREATE TABLE IF NOT EXISTS captain_store_invoices (
   FOREIGN KEY (captain_id) REFERENCES captains(id) ON DELETE CASCADE,
   FOREIGN KEY (store_id) REFERENCES finance_stores(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS finance_vouchers (
+  id VARCHAR(36) PRIMARY KEY,
+  captain_id VARCHAR(36) NOT NULL,
+  voucher_type VARCHAR(20) NOT NULL,
+  amount DECIMAL(12,2) NOT NULL,
+  note VARCHAR(500) DEFAULT '',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (captain_id) REFERENCES captains(id) ON DELETE CASCADE
+);
