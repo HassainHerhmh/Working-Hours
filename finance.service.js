@@ -494,3 +494,22 @@ export async function deleteVoucher(voucherId) {
 export async function listCaptainVouchers(captainId) {
   return getCaptainVouchers(captainId);
 }
+
+export async function listAllVouchers(captainId) {
+  if (captainId) {
+    return queryAll(
+      `SELECT v.*, c.name AS captain_name, c.captain_number
+       FROM finance_vouchers v
+       JOIN captains c ON c.id = v.captain_id
+       WHERE v.captain_id = ?
+       ORDER BY v.voucher_date DESC, v.created_at DESC`,
+      [captainId]
+    );
+  }
+  return queryAll(`
+    SELECT v.*, c.name AS captain_name, c.captain_number
+    FROM finance_vouchers v
+    JOIN captains c ON c.id = v.captain_id
+    ORDER BY v.voucher_date DESC, v.created_at DESC
+  `);
+}

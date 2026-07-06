@@ -669,6 +669,10 @@ app.put('/api/finance/captain/:captainId', async (req, res) => {
   }
 });
 
+app.get('/api/finance/vouchers', async (req, res) => {
+  res.json(await finance.listAllVouchers(req.query.captain_id || undefined));
+});
+
 app.get('/api/finance/captain/:captainId/vouchers', async (req, res) => {
   res.json(await finance.listCaptainVouchers(req.params.captainId));
 });
