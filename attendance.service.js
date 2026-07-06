@@ -1,5 +1,5 @@
 import { v4 as uuid } from 'uuid';
-import { queryAll, queryOne, execute, nowExpr } from './database.js';
+import { queryAll, queryOne, execute, toDbDateTime } from './database.js';
 import { getYemenNow } from './shiftReminder.service.js';
 
 const DAYS = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
@@ -60,13 +60,28 @@ function enumerateDates(from, to) {
   return dates;
 }
 
+function parseStoredUtcDatetime(value) {
+  if (!value) return null;
+  const raw = String(value);
+  const d = raw.includes('T')
+    ? new Date(raw)
+    : new Date(raw.replace(' ', 'T') + 'Z');
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 function formatCheckInTime(checkedInAt) {
-  if (!checkedInAt) return null;
-  const raw = String(checkedInAt);
-  const m = raw.match(/(\d{1,2}):(\d{2})/);
-  if (!m) return raw;
-  let h = Number(m[1]);
-  const mins = m[2];
+  const d = parseStoredUtcDatetime(checkedInAt);
+  if (!d) return null;
+
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Aden',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(d);
+
+  let h = Number(parts.find(p => p.type === 'hour')?.value || 0);
+  const mins = parts.find(p => p.type === 'minute')?.value || '00';
   const period = h >= 12 ? 'م' : 'ص';
   if (h === 0) h = 12;
   else if (h > 12) h -= 12;
@@ -113,9 +128,10 @@ export async function recordCheckIn(captainId) {
   }
 
   const id = uuid();
+  const checkedInAt = toDbDateTime(new Date());
   await execute(
-    `INSERT INTO attendance_checkins (id, captain_id, check_date, checked_in_at) VALUES (?, ?, ?, ${nowExpr()})`,
-    [id, captainId, checkDate]
+    'INSERT INTO attendance_checkins (id, captain_id, check_date, checked_in_at) VALUES (?, ?, ?, ?)',
+    [id, captainId, checkDate, checkedInAt]
   );
 
   const row = await queryOne('SELECT * FROM attendance_checkins WHERE id = ?', [id]);
