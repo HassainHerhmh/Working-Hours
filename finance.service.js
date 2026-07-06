@@ -339,6 +339,8 @@ export async function saveCaptainFinance(captainId, data) {
       );
     }
     await recordInvoicePosting(captainId, totalInvoices, num(data.transfers_debts), data.sales_date);
+    await execute('DELETE FROM captain_store_invoices WHERE captain_id = ?', [captainId]);
+    await execute('UPDATE captain_finances SET transfers_debts = 0 WHERE captain_id = ?', [captainId]);
   }
 
   return getCaptainFinance(captainId);
