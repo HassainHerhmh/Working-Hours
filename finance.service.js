@@ -496,7 +496,7 @@ export async function createVoucher(captainId, { voucher_type, amount, note, vou
   return queryOne('SELECT * FROM finance_vouchers WHERE id = ?', [id]);
 }
 
-export async function updateVoucher(voucherId, { voucher_type, amount, note, voucher_date }) {
+export async function updateVoucher(voucherId, { voucher_type, amount, note, voucher_date, captain_id }) {
   const row = await queryOne('SELECT * FROM finance_vouchers WHERE id = ?', [voucherId]);
   if (!row) throw new Error('السند غير موجود');
 
@@ -504,10 +504,17 @@ export async function updateVoucher(voucherId, { voucher_type, amount, note, vou
   const amt = num(amount);
   if (amt <= 0) throw new Error('المبلغ يجب أن يكون أكبر من صفر');
 
+  let captainId = row.captain_id;
+  if (captain_id && captain_id !== row.captain_id) {
+    const captain = await queryOne('SELECT id FROM captains WHERE id = ?', [captain_id]);
+    if (!captain) throw new Error('الكابتن غير موجود');
+    captainId = captain_id;
+  }
+
   const dateKey = normalizeSalesDate(voucher_date || row.voucher_date);
   await execute(
-    'UPDATE finance_vouchers SET voucher_type = ?, amount = ?, note = ?, voucher_date = ? WHERE id = ?',
-    [type, amt, String(note || '').trim(), dateKey, voucherId]
+    'UPDATE finance_vouchers SET captain_id = ?, voucher_type = ?, amount = ?, note = ?, voucher_date = ? WHERE id = ?',
+    [captainId, type, amt, String(note || '').trim(), dateKey, voucherId]
   );
   return queryOne('SELECT * FROM finance_vouchers WHERE id = ?', [voucherId]);
 }
