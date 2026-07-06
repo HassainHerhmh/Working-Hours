@@ -271,6 +271,19 @@ export async function listInvoicePostings() {
   `);
 }
 
+export async function deleteInvoicePosting(postingId) {
+  const posting = await queryOne('SELECT * FROM finance_invoice_postings WHERE id = ?', [postingId]);
+  if (!posting) throw new Error('سجل الترحيل غير موجود');
+
+  await execute('DELETE FROM captain_store_invoices WHERE captain_id = ?', [posting.captain_id]);
+  await execute(
+    'UPDATE captain_finances SET transfers_debts = 0 WHERE captain_id = ?',
+    [posting.captain_id]
+  );
+  await execute('DELETE FROM finance_invoice_postings WHERE id = ?', [postingId]);
+  return { ok: true, captain_id: posting.captain_id };
+}
+
 export async function createVoucher(captainId, { voucher_type, amount, note }) {
   const captain = await queryOne('SELECT id FROM captains WHERE id = ?', [captainId]);
   if (!captain) throw new Error('الكابتن غير موجود');

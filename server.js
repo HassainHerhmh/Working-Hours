@@ -687,6 +687,14 @@ app.get('/api/finance/invoice-postings', async (_, res) => {
   res.json(await finance.listInvoicePostings());
 });
 
+app.delete('/api/finance/invoice-postings/:id', async (req, res) => {
+  try {
+    res.json(await finance.deleteInvoicePosting(req.params.id));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 // ─── Attendance ─────────────────────────────────────────────
 
 app.post('/api/attendance/check-in', async (req, res) => {
