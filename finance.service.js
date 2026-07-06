@@ -1,8 +1,22 @@
 import { v4 as uuid } from 'uuid';
 import { queryAll, queryOne, execute, isMySQL } from './database.js';
+import { getDateRange, yemenDateKey } from './attendance.service.js';
 
 function num(v) {
   return Math.round((Number(v) || 0) * 100) / 100;
+}
+
+function toDateKey(value) {
+  if (!value) return '';
+  const raw = String(value);
+  const d = new Date(raw.includes('T') ? raw : raw.replace(' ', 'T'));
+  if (Number.isNaN(d.getTime())) return raw.slice(0, 10);
+  return yemenDateKey(d);
+}
+
+function inDateRange(value, from, to) {
+  const key = toDateKey(value);
+  return key && key >= from && key <= to;
 }
 
 export function buildFinanceSummary(finance, invoices, config, vouchers = []) {
@@ -138,17 +152,60 @@ async function getCaptainVouchers(captainId) {
   );
 }
 
-export async function getCaptainFinance(captainId) {
+export async function getCaptainFinance(captainId, { period, date } = {}) {
   const captain = await queryOne('SELECT id, name, captain_number FROM captains WHERE id = ?', [captainId]);
   if (!captain) throw new Error('الكابتن غير موجود');
 
   const finance = await getCaptainFinanceRow(captainId);
-  const invoices = await getCaptainInvoices(captainId);
-  const vouchers = await getCaptainVouchers(captainId);
+  const allInvoices = await getCaptainInvoices(captainId);
+  const allVouchers = await getCaptainVouchers(captainId);
+  const posting = await queryOne(
+    'SELECT * FROM finance_invoice_postings WHERE captain_id = ?',
+    [captainId]
+  );
   const config = await getFinanceConfig();
-  const summary = buildFinanceSummary(finance, invoices, config, vouchers);
 
-  return { captain, finance, config, ...summary };
+  let range = null;
+  if (period && ['day', 'week', 'month'].includes(period)) {
+    range = getDateRange(period, date);
+  }
+
+  let invoices = allInvoices;
+  let transfers_debts = num(finance?.transfers_debts);
+  let total_invoices = invoices.reduce((s, row) => s + num(row.amount), 0);
+  let vouchers = allVouchers;
+
+  if (range) {
+    vouchers = allVouchers.filter(v => inDateRange(v.created_at, range.from, range.to));
+    const postingInRange = posting && inDateRange(posting.posted_at, range.from, range.to);
+    if (postingInRange) {
+      transfers_debts = num(posting.transfers_debts);
+      total_invoices = num(posting.total_invoices);
+      invoices = allInvoices;
+    } else {
+      transfers_debts = 0;
+      total_invoices = 0;
+      invoices = [];
+    }
+  }
+
+  const summary = buildFinanceSummary(
+    { ...finance, transfers_debts },
+    invoices,
+    config,
+    vouchers
+  );
+
+  return {
+    captain,
+    finance,
+    config,
+    period: period || null,
+    from: range?.from || null,
+    to: range?.to || null,
+    ...summary,
+    total_invoices,
+  };
 }
 
 export async function saveCaptainFinance(captainId, data) {

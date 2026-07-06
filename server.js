@@ -650,7 +650,8 @@ app.delete('/api/finance/stores/:id', async (req, res) => {
 
 app.get('/api/finance/captain/:captainId', async (req, res) => {
   try {
-    res.json(await finance.getCaptainFinance(req.params.captainId));
+    const { period, date } = req.query;
+    res.json(await finance.getCaptainFinance(req.params.captainId, { period, date }));
   } catch (err) {
     res.status(404).json({ error: err.message });
   }
