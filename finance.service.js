@@ -19,6 +19,50 @@ function inDateRange(value, from, to) {
   return key && key >= from && key <= to;
 }
 
+function isBeforeDate(value, beforeKey) {
+  const key = toDateKey(value);
+  return key && key < beforeKey;
+}
+
+function dayBeforeKey(dateKey) {
+  const [y, m, d] = String(dateKey).split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() - 1);
+  return yemenDateKey(dt);
+}
+
+function buildPreviousBalance(range, posting, commissionPosting, allInvoices, allVouchers, config) {
+  const from = range.from;
+  const priorVouchers = allVouchers.filter(v => isBeforeDate(v.created_at, from));
+  const postingBefore = posting && isBeforeDate(posting.posted_at, from);
+  const commissionBefore = commissionPosting && isBeforeDate(commissionPosting.posted_at, from);
+
+  if (!postingBefore && !commissionBefore && priorVouchers.length === 0) {
+    return null;
+  }
+
+  const invoices = postingBefore ? allInvoices : [];
+  const summary = buildFinanceSummary(
+    {
+      transfers_debts: postingBefore ? num(posting.transfers_debts) : 0,
+      rent: commissionBefore ? num(commissionPosting.rent) : 0,
+      total_commission: commissionBefore ? num(commissionPosting.total_commission) : 0,
+    },
+    invoices,
+    config,
+    priorVouchers
+  );
+
+  if (Math.abs(summary.remaining_for_company) < 0.01) {
+    return null;
+  }
+
+  return {
+    ...summary,
+    to: dayBeforeKey(from),
+  };
+}
+
 export function buildFinanceSummary(finance, invoices, config, vouchers = []) {
   const total_invoices = invoices.reduce((s, row) => s + num(row.amount), 0);
   const transfers_debts = num(finance?.transfers_debts);
@@ -163,6 +207,10 @@ export async function getCaptainFinance(captainId, { period, date } = {}) {
     'SELECT * FROM finance_invoice_postings WHERE captain_id = ?',
     [captainId]
   );
+  const commissionPosting = await queryOne(
+    'SELECT * FROM finance_commission_postings WHERE captain_id = ?',
+    [captainId]
+  );
   const config = await getFinanceConfig();
 
   let range = null;
@@ -174,6 +222,7 @@ export async function getCaptainFinance(captainId, { period, date } = {}) {
   let transfers_debts = num(finance?.transfers_debts);
   let total_invoices = invoices.reduce((s, row) => s + num(row.amount), 0);
   let vouchers = allVouchers;
+  let previous_balance = null;
 
   if (range) {
     vouchers = allVouchers.filter(v => inDateRange(v.created_at, range.from, range.to));
@@ -186,6 +235,17 @@ export async function getCaptainFinance(captainId, { period, date } = {}) {
       transfers_debts = 0;
       total_invoices = 0;
       invoices = [];
+    }
+
+    if (period === 'day' || period === 'week') {
+      previous_balance = buildPreviousBalance(
+        range,
+        posting,
+        commissionPosting,
+        allInvoices,
+        allVouchers,
+        config
+      );
     }
   }
 
@@ -203,6 +263,7 @@ export async function getCaptainFinance(captainId, { period, date } = {}) {
     period: period || null,
     from: range?.from || null,
     to: range?.to || null,
+    previous_balance,
     ...summary,
     total_invoices,
   };
