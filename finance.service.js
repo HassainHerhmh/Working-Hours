@@ -284,6 +284,65 @@ export async function deleteInvoicePosting(postingId) {
   return { ok: true, captain_id: posting.captain_id };
 }
 
+async function recordCommissionPosting(captainId, totalCommission, rent) {
+  if (totalCommission <= 0 && rent <= 0) return;
+
+  const existing = await queryOne(
+    'SELECT id FROM finance_commission_postings WHERE captain_id = ?',
+    [captainId]
+  );
+
+  if (existing) {
+    await execute(
+      `UPDATE finance_commission_postings SET total_commission = ?, rent = ?, posted_at = ${isMySQL ? 'NOW()' : "datetime('now')"} WHERE captain_id = ?`,
+      [num(totalCommission), num(rent), captainId]
+    );
+  } else {
+    await execute(
+      'INSERT INTO finance_commission_postings (id, captain_id, total_commission, rent) VALUES (?, ?, ?, ?)',
+      [uuid(), captainId, num(totalCommission), num(rent)]
+    );
+  }
+}
+
+export async function saveCaptainCommission(captainId, { total_commission, rent }) {
+  const captain = await queryOne('SELECT id FROM captains WHERE id = ?', [captainId]);
+  if (!captain) throw new Error('الكابتن غير موجود');
+
+  const totalCommission = num(total_commission);
+  const rentAmount = num(rent);
+
+  await getCaptainFinanceRow(captainId);
+  await execute(
+    'UPDATE captain_finances SET rent = ?, total_commission = ? WHERE captain_id = ?',
+    [rentAmount, totalCommission, captainId]
+  );
+  await recordCommissionPosting(captainId, totalCommission, rentAmount);
+
+  return getCaptainFinance(captainId);
+}
+
+export async function listCommissionPostings() {
+  return queryAll(`
+    SELECT p.*, c.name AS captain_name, c.captain_number
+    FROM finance_commission_postings p
+    JOIN captains c ON c.id = p.captain_id
+    ORDER BY p.posted_at DESC
+  `);
+}
+
+export async function deleteCommissionPosting(postingId) {
+  const posting = await queryOne('SELECT * FROM finance_commission_postings WHERE id = ?', [postingId]);
+  if (!posting) throw new Error('سجل العمولة غير موجود');
+
+  await execute(
+    'UPDATE captain_finances SET rent = 0, total_commission = 0 WHERE captain_id = ?',
+    [posting.captain_id]
+  );
+  await execute('DELETE FROM finance_commission_postings WHERE id = ?', [postingId]);
+  return { ok: true, captain_id: posting.captain_id };
+}
+
 export async function createVoucher(captainId, { voucher_type, amount, note }) {
   const captain = await queryOne('SELECT id FROM captains WHERE id = ?', [captainId]);
   if (!captain) throw new Error('الكابتن غير موجود');

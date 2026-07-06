@@ -510,6 +510,50 @@ export async function migrateFinanceInvoicePostingsTable() {
   }
 }
 
+export async function migrateFinanceCommissionPostingsTable() {
+  if (isMySQL) {
+    await execute(`
+      CREATE TABLE IF NOT EXISTS finance_commission_postings (
+        id VARCHAR(36) PRIMARY KEY,
+        captain_id VARCHAR(36) NOT NULL UNIQUE,
+        total_commission DECIMAL(12,2) NOT NULL DEFAULT 0,
+        rent DECIMAL(12,2) NOT NULL DEFAULT 0,
+        posted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (captain_id) REFERENCES captains(id) ON DELETE CASCADE
+      )
+    `);
+  } else {
+    sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS finance_commission_postings (
+        id TEXT PRIMARY KEY,
+        captain_id TEXT NOT NULL UNIQUE REFERENCES captains(id) ON DELETE CASCADE,
+        total_commission REAL NOT NULL DEFAULT 0,
+        rent REAL NOT NULL DEFAULT 0,
+        posted_at TEXT DEFAULT (datetime('now'))
+      )
+    `);
+  }
+
+  const rows = await queryAll(`
+    SELECT captain_id, total_commission, rent
+    FROM captain_finances
+    WHERE total_commission > 0 OR rent > 0
+  `);
+
+  for (const row of rows) {
+    const exists = await queryOne(
+      'SELECT id FROM finance_commission_postings WHERE captain_id = ?',
+      [row.captain_id]
+    );
+    if (!exists) {
+      await execute(
+        'INSERT INTO finance_commission_postings (id, captain_id, total_commission, rent) VALUES (?, ?, ?, ?)',
+        [uuid(), row.captain_id, row.total_commission, row.rent]
+      );
+    }
+  }
+}
+
 export async function migrateCaptainUsernameColumn() {
   if (isMySQL) {
     const cols = await queryAll("SHOW COLUMNS FROM captains LIKE 'username'");
