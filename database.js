@@ -850,6 +850,27 @@ export async function migrateFinanceCommissionPerDate() {
   }
 }
 
+export async function migrateFinanceVoucherTransferColumns() {
+  if (isMySQL) {
+    const groupCols = await queryAll("SHOW COLUMNS FROM finance_vouchers LIKE 'transfer_group_id'");
+    if (!groupCols.length) {
+      await execute('ALTER TABLE finance_vouchers ADD COLUMN transfer_group_id VARCHAR(36) NULL');
+    }
+    const counterpartCols = await queryAll("SHOW COLUMNS FROM finance_vouchers LIKE 'counterpart_captain_id'");
+    if (!counterpartCols.length) {
+      await execute('ALTER TABLE finance_vouchers ADD COLUMN counterpart_captain_id VARCHAR(36) NULL');
+    }
+  } else {
+    const cols = sqlite.prepare('PRAGMA table_info(finance_vouchers)').all();
+    if (!cols.some(c => c.name === 'transfer_group_id')) {
+      sqlite.exec('ALTER TABLE finance_vouchers ADD COLUMN transfer_group_id TEXT');
+    }
+    if (!cols.some(c => c.name === 'counterpart_captain_id')) {
+      sqlite.exec('ALTER TABLE finance_vouchers ADD COLUMN counterpart_captain_id TEXT');
+    }
+  }
+}
+
 export async function migrateFinanceVoucherDateColumn() {
   if (isMySQL) {
     const cols = await queryAll("SHOW COLUMNS FROM finance_vouchers LIKE 'voucher_date'");

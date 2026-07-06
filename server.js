@@ -6,7 +6,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
-import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn, migrateShiftPeriodColumns, migrateShiftReminderTable, migrateAttendanceTable, migrateFinanceTables, migrateFinanceVouchersTable, migrateFinanceInvoicePostingsTable, migrateFinanceInvoiceSalesDateColumn, migrateFinanceInvoicePerDate, migrateFinanceCommissionPostingsTable, migrateFinanceCommissionSalesDateColumn, migrateFinanceCommissionPerDate, migrateFinanceVoucherDateColumn, toDbDateTime } from './database.js';
+import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn, migrateShiftPeriodColumns, migrateShiftReminderTable, migrateAttendanceTable, migrateFinanceTables, migrateFinanceVouchersTable, migrateFinanceInvoicePostingsTable, migrateFinanceInvoiceSalesDateColumn, migrateFinanceInvoicePerDate, migrateFinanceCommissionPostingsTable, migrateFinanceCommissionSalesDateColumn, migrateFinanceCommissionPerDate, migrateFinanceVoucherDateColumn, migrateFinanceVoucherTransferColumns, toDbDateTime } from './database.js';
 import * as smsGw from './smsGateway.service.js';
 import * as shiftReminder from './shiftReminder.service.js';
 import * as attendance from './attendance.service.js';
@@ -126,6 +126,7 @@ async function seedIfEmpty() {
   await migrateFinanceCommissionSalesDateColumn();
   await migrateFinanceCommissionPerDate();
   await migrateFinanceVoucherDateColumn();
+  await migrateFinanceVoucherTransferColumns();
   const captainCount = Number((await queryOne('SELECT COUNT(*) as c FROM captains')).c);
   if (captainCount === 0) {
     const captains = [
@@ -700,6 +701,23 @@ app.delete('/api/finance/vouchers/:id', async (req, res) => {
 app.put('/api/finance/vouchers/:id', async (req, res) => {
   try {
     res.json(await finance.updateVoucher(req.params.id, req.body));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/finance/transfer-vouchers', async (req, res) => {
+  try {
+    const transfer = await finance.createTransferVoucher(req.body);
+    res.status(201).json(transfer);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.put('/api/finance/transfer-vouchers/:groupId', async (req, res) => {
+  try {
+    res.json(await finance.updateTransferVoucher(req.params.groupId, req.body));
   } catch (err) {
     res.status(400).json({ error: err.message });
   }

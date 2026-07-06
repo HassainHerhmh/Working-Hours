@@ -558,9 +558,146 @@ export async function createVoucher(captainId, { voucher_type, amount, note, vou
   return queryOne('SELECT * FROM finance_vouchers WHERE id = ?', [id]);
 }
 
+async function assertCaptainExists(captainId, label = 'الكابتن') {
+  const captain = await queryOne('SELECT id FROM captains WHERE id = ?', [captainId]);
+  if (!captain) throw new Error(`${label} غير موجود`);
+  return captain;
+}
+
+function buildTransferNote(note, fromName, toName) {
+  const base = String(note || '').trim();
+  const suffix = `تحويل من ${fromName} إلى ${toName}`;
+  return base ? `${base} — ${suffix}` : suffix;
+}
+
+function mapTransferRow(v) {
+  return {
+    id: v.id,
+    transfer_group_id: v.transfer_group_id,
+    voucher_type: 'transfer',
+    amount: num(v.amount),
+    note: v.note || '',
+    voucher_date: voucherDateKey(v),
+    created_at: v.created_at,
+    from_captain_id: v.captain_id,
+    from_captain_name: v.captain_name,
+    from_captain_number: v.captain_number,
+    to_captain_id: v.counterpart_captain_id,
+    to_captain_name: v.counterpart_name,
+    to_captain_number: v.counterpart_number,
+    captain_id: v.captain_id,
+    captain_name: v.captain_name,
+    captain_number: v.captain_number,
+  };
+}
+
+function normalizeVoucherList(rows) {
+  const out = [];
+  const seenTransfers = new Set();
+  for (const v of rows) {
+    if (v.transfer_group_id) {
+      if (v.voucher_type !== 'receipt') continue;
+      if (seenTransfers.has(v.transfer_group_id)) continue;
+      seenTransfers.add(v.transfer_group_id);
+      out.push(mapTransferRow(v));
+    } else {
+      out.push(v);
+    }
+  }
+  return out;
+}
+
+const voucherListSql = `
+  SELECT v.*, c.name AS captain_name, c.captain_number,
+    tc.name AS counterpart_name, tc.captain_number AS counterpart_number
+  FROM finance_vouchers v
+  JOIN captains c ON c.id = v.captain_id
+  LEFT JOIN captains tc ON tc.id = v.counterpart_captain_id
+`;
+
+export async function createTransferVoucher({ from_captain_id, to_captain_id, amount, note, voucher_date }) {
+  if (!from_captain_id || !to_captain_id) throw new Error('اختر الكابتنين');
+  if (from_captain_id === to_captain_id) throw new Error('لا يمكن التحويل لنفس الكابتن');
+
+  await assertCaptainExists(from_captain_id, 'الكابتن المُرسِل');
+  await assertCaptainExists(to_captain_id, 'الكابتن المستلم');
+
+  const amt = num(amount);
+  if (amt <= 0) throw new Error('المبلغ يجب أن يكون أكبر من صفر');
+
+  const fromCaptain = await queryOne('SELECT name FROM captains WHERE id = ?', [from_captain_id]);
+  const toCaptain = await queryOne('SELECT name FROM captains WHERE id = ?', [to_captain_id]);
+  const dateKey = normalizeSalesDate(voucher_date);
+  const transferNote = buildTransferNote(note, fromCaptain.name, toCaptain.name);
+  const groupId = uuid();
+  const receiptId = uuid();
+  const disbursementId = uuid();
+
+  await execute(
+    `INSERT INTO finance_vouchers
+      (id, captain_id, voucher_type, amount, note, voucher_date, transfer_group_id, counterpart_captain_id)
+     VALUES (?, ?, 'receipt', ?, ?, ?, ?, ?)`,
+    [receiptId, from_captain_id, amt, transferNote, dateKey, groupId, to_captain_id]
+  );
+  await execute(
+    `INSERT INTO finance_vouchers
+      (id, captain_id, voucher_type, amount, note, voucher_date, transfer_group_id, counterpart_captain_id)
+     VALUES (?, ?, 'disbursement', ?, ?, ?, ?, ?)`,
+    [disbursementId, to_captain_id, amt, transferNote, dateKey, groupId, from_captain_id]
+  );
+
+  const row = await queryOne(
+    `${voucherListSql} WHERE v.transfer_group_id = ? AND v.voucher_type = 'receipt'`,
+    [groupId]
+  );
+  return mapTransferRow(row);
+}
+
+export async function updateTransferVoucher(groupId, { from_captain_id, to_captain_id, amount, note, voucher_date }) {
+  const pair = await queryAll(
+    'SELECT * FROM finance_vouchers WHERE transfer_group_id = ?',
+    [groupId]
+  );
+  if (pair.length !== 2) throw new Error('سند التحويل غير موجود');
+
+  if (!from_captain_id || !to_captain_id) throw new Error('اختر الكابتنين');
+  if (from_captain_id === to_captain_id) throw new Error('لا يمكن التحويل لنفس الكابتن');
+
+  await assertCaptainExists(from_captain_id, 'الكابتن المُرسِل');
+  await assertCaptainExists(to_captain_id, 'الكابتن المستلم');
+
+  const amt = num(amount);
+  if (amt <= 0) throw new Error('المبلغ يجب أن يكون أكبر من صفر');
+
+  const fromCaptain = await queryOne('SELECT name FROM captains WHERE id = ?', [from_captain_id]);
+  const toCaptain = await queryOne('SELECT name FROM captains WHERE id = ?', [to_captain_id]);
+  const dateKey = normalizeSalesDate(voucher_date || pair[0].voucher_date);
+  const transferNote = buildTransferNote(note, fromCaptain.name, toCaptain.name);
+
+  await execute(
+    `UPDATE finance_vouchers
+     SET captain_id = ?, amount = ?, note = ?, voucher_date = ?, counterpart_captain_id = ?
+     WHERE transfer_group_id = ? AND voucher_type = 'receipt'`,
+    [from_captain_id, amt, transferNote, dateKey, to_captain_id, groupId]
+  );
+  await execute(
+    `UPDATE finance_vouchers
+     SET captain_id = ?, amount = ?, note = ?, voucher_date = ?, counterpart_captain_id = ?
+     WHERE transfer_group_id = ? AND voucher_type = 'disbursement'`,
+    [to_captain_id, amt, transferNote, dateKey, from_captain_id, groupId]
+  );
+
+  const row = await queryOne(
+    `${voucherListSql} WHERE v.transfer_group_id = ? AND v.voucher_type = 'receipt'`,
+    [groupId]
+  );
+  return mapTransferRow(row);
+}
+
 export async function updateVoucher(voucherId, { voucher_type, amount, note, voucher_date, captain_id }) {
   const row = await queryOne('SELECT * FROM finance_vouchers WHERE id = ?', [voucherId]);
   if (!row) throw new Error('السند غير موجود');
+  if (row.transfer_group_id) throw new Error('استخدم تعديل سند التحويل');
 
   const type = voucher_type === 'receipt' ? 'receipt' : 'disbursement';
   const amt = num(amount);
@@ -582,7 +719,12 @@ export async function updateVoucher(voucherId, { voucher_type, amount, note, vou
 }
 
 export async function deleteVoucher(voucherId) {
-  await execute('DELETE FROM finance_vouchers WHERE id = ?', [voucherId]);
+  const row = await queryOne('SELECT * FROM finance_vouchers WHERE id = ?', [voucherId]);
+  if (row?.transfer_group_id) {
+    await execute('DELETE FROM finance_vouchers WHERE transfer_group_id = ?', [row.transfer_group_id]);
+  } else {
+    await execute('DELETE FROM finance_vouchers WHERE id = ?', [voucherId]);
+  }
   return { ok: true };
 }
 
@@ -591,22 +733,21 @@ export async function listCaptainVouchers(captainId) {
 }
 
 export async function listAllVouchers(captainId) {
+  let rows;
   if (captainId) {
-    return queryAll(
-      `SELECT v.*, c.name AS captain_name, c.captain_number
-       FROM finance_vouchers v
-       JOIN captains c ON c.id = v.captain_id
-       WHERE v.captain_id = ?
+    rows = await queryAll(
+      `${voucherListSql}
+       WHERE v.captain_id = ? OR v.counterpart_captain_id = ?
        ORDER BY v.voucher_date DESC, v.created_at DESC`,
-      [captainId]
+      [captainId, captainId]
+    );
+  } else {
+    rows = await queryAll(
+      `${voucherListSql}
+       ORDER BY v.voucher_date DESC, v.created_at DESC`
     );
   }
-  return queryAll(`
-    SELECT v.*, c.name AS captain_name, c.captain_number
-    FROM finance_vouchers v
-    JOIN captains c ON c.id = v.captain_id
-    ORDER BY v.voucher_date DESC, v.created_at DESC
-  `);
+  return normalizeVoucherList(rows);
 }
 
 function getReportRange(period = 'day', date) {
