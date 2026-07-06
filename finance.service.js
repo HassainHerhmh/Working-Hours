@@ -1,0 +1,156 @@
+import { v4 as uuid } from 'uuid';
+import { queryAll, queryOne, execute, isMySQL } from './database.js';
+
+function num(v) {
+  return Math.round((Number(v) || 0) * 100) / 100;
+}
+
+export function buildFinanceSummary(finance, invoices, config) {
+  const total_invoices = invoices.reduce((s, row) => s + num(row.amount), 0);
+  const transfers_debts = num(finance?.transfers_debts);
+  const rent = num(finance?.rent);
+  const total_commission = num(finance?.total_commission);
+  const company_rate = num(config?.company_commission_rate);
+  const company_commission = num(total_commission * company_rate / 100);
+  const captain_commission = num(total_commission - company_commission);
+  const net_delivery_fees = num(total_commission - company_commission - rent);
+  const remaining_for_company = num(
+    total_invoices - transfers_debts + company_commission + rent
+  );
+
+  return {
+    total_invoices,
+    transfers_debts,
+    rent,
+    total_commission,
+    company_commission_rate: company_rate,
+    company_commission,
+    captain_commission,
+    net_delivery_fees,
+    remaining_for_company,
+    invoices: invoices.map(row => ({
+      id: row.id,
+      store_id: row.store_id,
+      store_name: row.store_name,
+      amount: num(row.amount),
+    })),
+  };
+}
+
+export async function getFinanceConfig() {
+  let row = await queryOne('SELECT * FROM finance_config WHERE id = 1');
+  if (!row) {
+    await execute(
+      'INSERT INTO finance_config (id, company_commission_rate) VALUES (1, 20)',
+      []
+    );
+    row = await queryOne('SELECT * FROM finance_config WHERE id = 1');
+  }
+  return row;
+}
+
+export async function saveFinanceConfig({ company_commission_rate }) {
+  const rate = num(company_commission_rate);
+  if (isMySQL) {
+    await execute(
+      `INSERT INTO finance_config (id, company_commission_rate) VALUES (1, ?)
+       ON DUPLICATE KEY UPDATE company_commission_rate = ?`,
+      [rate, rate]
+    );
+  } else {
+    await execute(
+      'UPDATE finance_config SET company_commission_rate = ? WHERE id = 1',
+      [rate]
+    );
+  }
+  return getFinanceConfig();
+}
+
+export async function listStores() {
+  return queryAll('SELECT * FROM finance_stores ORDER BY name');
+}
+
+export async function createStore(name) {
+  const trimmed = String(name || '').trim();
+  if (!trimmed) throw new Error('اسم المحل مطلوب');
+  const id = uuid();
+  await execute('INSERT INTO finance_stores (id, name) VALUES (?, ?)', [id, trimmed]);
+  return queryOne('SELECT * FROM finance_stores WHERE id = ?', [id]);
+}
+
+export async function updateStore(id, name) {
+  const trimmed = String(name || '').trim();
+  if (!trimmed) throw new Error('اسم المحل مطلوب');
+  await execute('UPDATE finance_stores SET name = ? WHERE id = ?', [trimmed, id]);
+  return queryOne('SELECT * FROM finance_stores WHERE id = ?', [id]);
+}
+
+export async function deleteStore(id) {
+  await execute('DELETE FROM captain_store_invoices WHERE store_id = ?', [id]);
+  await execute('DELETE FROM finance_stores WHERE id = ?', [id]);
+  return { ok: true };
+}
+
+async function getCaptainFinanceRow(captainId) {
+  let row = await queryOne('SELECT * FROM captain_finances WHERE captain_id = ?', [captainId]);
+  if (!row) {
+    await execute(
+      'INSERT INTO captain_finances (captain_id, transfers_debts, rent, total_commission) VALUES (?, 0, 0, 0)',
+      [captainId]
+    );
+    row = await queryOne('SELECT * FROM captain_finances WHERE captain_id = ?', [captainId]);
+  }
+  return row;
+}
+
+async function getCaptainInvoices(captainId) {
+  return queryAll(`
+    SELECT i.id, i.store_id, i.amount, s.name AS store_name
+    FROM captain_store_invoices i
+    JOIN finance_stores s ON s.id = i.store_id
+    WHERE i.captain_id = ?
+    ORDER BY s.name
+  `, [captainId]);
+}
+
+export async function getCaptainFinance(captainId) {
+  const captain = await queryOne('SELECT id, name, captain_number FROM captains WHERE id = ?', [captainId]);
+  if (!captain) throw new Error('الكابتن غير موجود');
+
+  const finance = await getCaptainFinanceRow(captainId);
+  const invoices = await getCaptainInvoices(captainId);
+  const config = await getFinanceConfig();
+  const summary = buildFinanceSummary(finance, invoices, config);
+
+  return { captain, finance, config, ...summary };
+}
+
+export async function saveCaptainFinance(captainId, data) {
+  const captain = await queryOne('SELECT id FROM captains WHERE id = ?', [captainId]);
+  if (!captain) throw new Error('الكابتن غير موجود');
+
+  await getCaptainFinanceRow(captainId);
+  await execute(
+    `UPDATE captain_finances SET transfers_debts = ?, rent = ?, total_commission = ? WHERE captain_id = ?`,
+    [
+      num(data.transfers_debts),
+      num(data.rent),
+      num(data.total_commission),
+      captainId,
+    ]
+  );
+
+  if (Array.isArray(data.invoices)) {
+    await execute('DELETE FROM captain_store_invoices WHERE captain_id = ?', [captainId]);
+    for (const inv of data.invoices) {
+      const amount = num(inv.amount);
+      if (!inv.store_id || amount <= 0) continue;
+      await execute(
+        'INSERT INTO captain_store_invoices (id, captain_id, store_id, amount) VALUES (?, ?, ?, ?)',
+        [uuid(), captainId, inv.store_id, amount]
+      );
+    }
+  }
+
+  return getCaptainFinance(captainId);
+}

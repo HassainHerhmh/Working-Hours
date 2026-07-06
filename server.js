@@ -6,10 +6,11 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
-import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn, migrateShiftPeriodColumns, migrateShiftReminderTable, migrateAttendanceTable, toDbDateTime } from './database.js';
+import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn, migrateShiftPeriodColumns, migrateShiftReminderTable, migrateAttendanceTable, migrateFinanceTables, toDbDateTime } from './database.js';
 import * as smsGw from './smsGateway.service.js';
 import * as shiftReminder from './shiftReminder.service.js';
 import * as attendance from './attendance.service.js';
+import * as finance from './finance.service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -116,6 +117,7 @@ async function seedIfEmpty() {
   await migrateShiftPeriodColumns();
   await migrateShiftReminderTable();
   await migrateAttendanceTable();
+  await migrateFinanceTables();
   const captainCount = Number((await queryOne('SELECT COUNT(*) as c FROM captains')).c);
   if (captainCount === 0) {
     const captains = [
@@ -602,6 +604,62 @@ app.get('/api/captain-auth/me/:id', async (req, res) => {
     todayName: DAYS[today],
     attendance: attendanceStatus,
   });
+});
+
+// ─── Finance ────────────────────────────────────────────────
+
+app.get('/api/finance/config', async (_, res) => {
+  res.json(await finance.getFinanceConfig());
+});
+
+app.put('/api/finance/config', async (req, res) => {
+  try {
+    res.json(await finance.saveFinanceConfig(req.body));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.get('/api/finance/stores', async (_, res) => {
+  res.json(await finance.listStores());
+});
+
+app.post('/api/finance/stores', async (req, res) => {
+  try {
+    const store = await finance.createStore(req.body.name);
+    res.status(201).json(store);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.put('/api/finance/stores/:id', async (req, res) => {
+  try {
+    res.json(await finance.updateStore(req.params.id, req.body.name));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete('/api/finance/stores/:id', async (req, res) => {
+  await finance.deleteStore(req.params.id);
+  res.json({ ok: true });
+});
+
+app.get('/api/finance/captain/:captainId', async (req, res) => {
+  try {
+    res.json(await finance.getCaptainFinance(req.params.captainId));
+  } catch (err) {
+    res.status(404).json({ error: err.message });
+  }
+});
+
+app.put('/api/finance/captain/:captainId', async (req, res) => {
+  try {
+    res.json(await finance.saveCaptainFinance(req.params.captainId, req.body));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 // ─── Attendance ─────────────────────────────────────────────

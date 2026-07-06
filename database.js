@@ -107,6 +107,31 @@ const SCHEMA_SQLITE = `
     created_at TEXT DEFAULT (datetime('now')),
     UNIQUE(captain_id, check_date)
   );
+  CREATE TABLE IF NOT EXISTS finance_config (
+    id INTEGER PRIMARY KEY DEFAULT 1,
+    company_commission_rate REAL DEFAULT 20
+  );
+  CREATE TABLE IF NOT EXISTS finance_stores (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    is_active INTEGER DEFAULT 1,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS captain_finances (
+    captain_id TEXT PRIMARY KEY REFERENCES captains(id) ON DELETE CASCADE,
+    transfers_debts REAL DEFAULT 0,
+    rent REAL DEFAULT 0,
+    total_commission REAL DEFAULT 0,
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS captain_store_invoices (
+    id TEXT PRIMARY KEY,
+    captain_id TEXT NOT NULL REFERENCES captains(id) ON DELETE CASCADE,
+    store_id TEXT NOT NULL REFERENCES finance_stores(id) ON DELETE CASCADE,
+    amount REAL NOT NULL DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(captain_id, store_id)
+  );
 `;
 
 const SCHEMA_MYSQL = fs.readFileSync(path.join(__dirname, 'schema.mysql.sql'), 'utf8');
@@ -333,6 +358,80 @@ export async function migrateAttendanceTable() {
     `);
   } else {
     sqlite.exec(sql);
+  }
+}
+
+export async function migrateFinanceTables() {
+  if (isMySQL) {
+    await execute(`
+      CREATE TABLE IF NOT EXISTS finance_config (
+        id INT PRIMARY KEY DEFAULT 1,
+        company_commission_rate DECIMAL(5,2) DEFAULT 20
+      )
+    `);
+    await execute(`
+      CREATE TABLE IF NOT EXISTS finance_stores (
+        id VARCHAR(36) PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        is_active TINYINT DEFAULT 1,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await execute(`
+      CREATE TABLE IF NOT EXISTS captain_finances (
+        captain_id VARCHAR(36) PRIMARY KEY,
+        transfers_debts DECIMAL(12,2) DEFAULT 0,
+        rent DECIMAL(12,2) DEFAULT 0,
+        total_commission DECIMAL(12,2) DEFAULT 0,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        FOREIGN KEY (captain_id) REFERENCES captains(id) ON DELETE CASCADE
+      )
+    `);
+    await execute(`
+      CREATE TABLE IF NOT EXISTS captain_store_invoices (
+        id VARCHAR(36) PRIMARY KEY,
+        captain_id VARCHAR(36) NOT NULL,
+        store_id VARCHAR(36) NOT NULL,
+        amount DECIMAL(12,2) NOT NULL DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_captain_store (captain_id, store_id),
+        FOREIGN KEY (captain_id) REFERENCES captains(id) ON DELETE CASCADE,
+        FOREIGN KEY (store_id) REFERENCES finance_stores(id) ON DELETE CASCADE
+      )
+    `);
+  } else {
+    sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS finance_config (
+        id INTEGER PRIMARY KEY DEFAULT 1,
+        company_commission_rate REAL DEFAULT 20
+      );
+      CREATE TABLE IF NOT EXISTS finance_stores (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        is_active INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS captain_finances (
+        captain_id TEXT PRIMARY KEY REFERENCES captains(id) ON DELETE CASCADE,
+        transfers_debts REAL DEFAULT 0,
+        rent REAL DEFAULT 0,
+        total_commission REAL DEFAULT 0,
+        updated_at TEXT DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS captain_store_invoices (
+        id TEXT PRIMARY KEY,
+        captain_id TEXT NOT NULL REFERENCES captains(id) ON DELETE CASCADE,
+        store_id TEXT NOT NULL REFERENCES finance_stores(id) ON DELETE CASCADE,
+        amount REAL NOT NULL DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now')),
+        UNIQUE(captain_id, store_id)
+      );
+    `);
+  }
+
+  const cfg = await queryOne('SELECT id FROM finance_config WHERE id = 1');
+  if (!cfg) {
+    await execute('INSERT INTO finance_config (id, company_commission_rate) VALUES (1, 20)', []);
   }
 }
 

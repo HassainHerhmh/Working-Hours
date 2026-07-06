@@ -106,3 +106,35 @@ CREATE TABLE IF NOT EXISTS attendance_checkins (
   UNIQUE KEY uniq_captain_date (captain_id, check_date),
   FOREIGN KEY (captain_id) REFERENCES captains(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS finance_config (
+  id INT PRIMARY KEY DEFAULT 1,
+  company_commission_rate DECIMAL(5,2) DEFAULT 20
+);
+
+CREATE TABLE IF NOT EXISTS finance_stores (
+  id VARCHAR(36) PRIMARY KEY,
+  name VARCHAR(255) NOT NULL,
+  is_active TINYINT DEFAULT 1,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS captain_finances (
+  captain_id VARCHAR(36) PRIMARY KEY,
+  transfers_debts DECIMAL(12,2) DEFAULT 0,
+  rent DECIMAL(12,2) DEFAULT 0,
+  total_commission DECIMAL(12,2) DEFAULT 0,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (captain_id) REFERENCES captains(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS captain_store_invoices (
+  id VARCHAR(36) PRIMARY KEY,
+  captain_id VARCHAR(36) NOT NULL,
+  store_id VARCHAR(36) NOT NULL,
+  amount DECIMAL(12,2) NOT NULL DEFAULT 0,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_captain_store (captain_id, store_id),
+  FOREIGN KEY (captain_id) REFERENCES captains(id) ON DELETE CASCADE,
+  FOREIGN KEY (store_id) REFERENCES finance_stores(id) ON DELETE CASCADE
+);
