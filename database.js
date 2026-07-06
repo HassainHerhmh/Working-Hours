@@ -616,6 +616,15 @@ export async function migrateFinanceInvoicePerDate() {
     }
   }
 
+  const postingDateRows = await queryAll(
+    'SELECT id, posted_at, sales_date FROM finance_invoice_postings WHERE sales_date IS NULL OR sales_date = ?',
+    ['']
+  );
+  for (const row of postingDateRows) {
+    const salesDate = String(row.posted_at || '').slice(0, 10) || today;
+    await execute('UPDATE finance_invoice_postings SET sales_date = ? WHERE id = ?', [salesDate, row.id]);
+  }
+
   const invoiceRows = await queryAll(
     'SELECT id, captain_id FROM captain_store_invoices WHERE sales_date IS NULL OR sales_date = ?',
     ['']
@@ -630,32 +639,83 @@ export async function migrateFinanceInvoicePerDate() {
   }
 
   if (isMySQL) {
-    const indexes = await queryAll('SHOW INDEX FROM finance_invoice_postings WHERE Key_name = ?', ['captain_id']);
-    if (indexes.length) {
-      await execute('ALTER TABLE finance_invoice_postings DROP INDEX captain_id');
+    async function dropForeignKeys(table, column) {
+      const fkRows = await queryAll(`
+        SELECT CONSTRAINT_NAME
+        FROM information_schema.KEY_COLUMN_USAGE
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = ?
+          AND COLUMN_NAME = ?
+          AND REFERENCED_TABLE_NAME IS NOT NULL
+      `, [table, column]);
+      for (const fk of fkRows) {
+        await execute(`ALTER TABLE ${table} DROP FOREIGN KEY \`${fk.CONSTRAINT_NAME}\``);
+      }
+      return fkRows.length > 0;
     }
+
+    async function foreignKeyExists(table, column) {
+      const fkRows = await queryAll(`
+        SELECT CONSTRAINT_NAME
+        FROM information_schema.KEY_COLUMN_USAGE
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = ?
+          AND COLUMN_NAME = ?
+          AND REFERENCED_TABLE_NAME IS NOT NULL
+      `, [table, column]);
+      return fkRows.length > 0;
+    }
+
     const uniqPosting = await queryAll(
       'SHOW INDEX FROM finance_invoice_postings WHERE Key_name = ?',
       ['uniq_captain_invoice_sales_date']
     );
     if (!uniqPosting.length) {
+      const uniqueCaptain = await queryAll(
+        'SHOW INDEX FROM finance_invoice_postings WHERE Key_name = ? AND Non_unique = 0',
+        ['captain_id']
+      );
+      if (uniqueCaptain.length) {
+        await dropForeignKeys('finance_invoice_postings', 'captain_id');
+        await execute('ALTER TABLE finance_invoice_postings DROP INDEX captain_id');
+      }
       await execute(
         'ALTER TABLE finance_invoice_postings ADD UNIQUE KEY uniq_captain_invoice_sales_date (captain_id, sales_date)'
       );
+      if (!(await foreignKeyExists('finance_invoice_postings', 'captain_id'))) {
+        await execute(
+          'ALTER TABLE finance_invoice_postings ADD CONSTRAINT fk_invoice_postings_captain FOREIGN KEY (captain_id) REFERENCES captains(id) ON DELETE CASCADE'
+        );
+      }
     }
 
-    const storeIndexes = await queryAll('SHOW INDEX FROM captain_store_invoices WHERE Key_name = ?', ['uniq_captain_store']);
-    if (storeIndexes.length) {
-      await execute('ALTER TABLE captain_store_invoices DROP INDEX uniq_captain_store');
-    }
     const uniqStoreDate = await queryAll(
       'SHOW INDEX FROM captain_store_invoices WHERE Key_name = ?',
       ['uniq_captain_store_date']
     );
     if (!uniqStoreDate.length) {
+      const storeIndexes = await queryAll(
+        'SHOW INDEX FROM captain_store_invoices WHERE Key_name = ?',
+        ['uniq_captain_store']
+      );
+      if (storeIndexes.length) {
+        await dropForeignKeys('captain_store_invoices', 'captain_id');
+        await dropForeignKeys('captain_store_invoices', 'store_id');
+        await execute('ALTER TABLE captain_store_invoices DROP INDEX uniq_captain_store');
+      }
       await execute(
         'ALTER TABLE captain_store_invoices ADD UNIQUE KEY uniq_captain_store_date (captain_id, store_id, sales_date)'
       );
+      if (!(await foreignKeyExists('captain_store_invoices', 'captain_id'))) {
+        await execute(
+          'ALTER TABLE captain_store_invoices ADD CONSTRAINT fk_store_invoices_captain FOREIGN KEY (captain_id) REFERENCES captains(id) ON DELETE CASCADE'
+        );
+      }
+      if (!(await foreignKeyExists('captain_store_invoices', 'store_id'))) {
+        await execute(
+          'ALTER TABLE captain_store_invoices ADD CONSTRAINT fk_store_invoices_store FOREIGN KEY (store_id) REFERENCES finance_stores(id) ON DELETE CASCADE'
+        );
+      }
     }
   } else {
     const postingIndexes = sqlite.prepare('PRAGMA index_list(finance_invoice_postings)').all();
