@@ -280,6 +280,14 @@ export async function getCaptainFinance(captainId, { period, date, sales_date } 
     total_invoices = posting
       ? num(posting.total_invoices)
       : invoices.reduce((s, row) => s + num(row.amount), 0);
+
+    const commissionPosting = await queryOne(
+      'SELECT * FROM finance_commission_postings WHERE captain_id = ? AND sales_date = ?',
+      [captainId, normalizedSalesDate]
+    );
+    rent = commissionPosting ? num(commissionPosting.rent) : 0;
+    total_commission = commissionPosting ? num(commissionPosting.total_commission) : 0;
+    vouchers = [];
   } else if (range) {
     vouchers = allVouchers.filter(v => voucherInDateRange(v, range.from, range.to));
 
@@ -340,14 +348,6 @@ export async function saveCaptainFinance(captainId, data) {
   const sales_date = normalizeSalesDate(data.sales_date);
 
   await getCaptainFinanceRow(captainId);
-  await execute(
-    `UPDATE captain_finances SET rent = ?, total_commission = ? WHERE captain_id = ?`,
-    [
-      num(data.rent),
-      num(data.total_commission),
-      captainId,
-    ]
-  );
 
   if (Array.isArray(data.invoices)) {
     await execute(
@@ -424,14 +424,14 @@ async function recordCommissionPosting(captainId, totalCommission, rent, salesDa
 
   const sales_date = normalizeSalesDate(salesDate);
   const existing = await queryOne(
-    'SELECT id FROM finance_commission_postings WHERE captain_id = ?',
-    [captainId]
+    'SELECT id FROM finance_commission_postings WHERE captain_id = ? AND sales_date = ?',
+    [captainId, sales_date]
   );
 
   if (existing) {
     await execute(
-      `UPDATE finance_commission_postings SET total_commission = ?, rent = ?, sales_date = ?, posted_at = ${isMySQL ? 'NOW()' : "datetime('now')"} WHERE captain_id = ?`,
-      [num(totalCommission), num(rent), sales_date, captainId]
+      `UPDATE finance_commission_postings SET total_commission = ?, rent = ?, posted_at = ${isMySQL ? 'NOW()' : "datetime('now')"} WHERE id = ?`,
+      [num(totalCommission), num(rent), existing.id]
     );
   } else {
     await execute(
@@ -447,15 +447,12 @@ export async function saveCaptainCommission(captainId, { total_commission, rent,
 
   const totalCommission = num(total_commission);
   const rentAmount = num(rent);
+  const normalizedDate = normalizeSalesDate(sales_date);
 
   await getCaptainFinanceRow(captainId);
-  await execute(
-    'UPDATE captain_finances SET rent = ?, total_commission = ? WHERE captain_id = ?',
-    [rentAmount, totalCommission, captainId]
-  );
-  await recordCommissionPosting(captainId, totalCommission, rentAmount, sales_date);
+  await recordCommissionPosting(captainId, totalCommission, rentAmount, normalizedDate);
 
-  return getCaptainFinance(captainId);
+  return getCaptainFinance(captainId, { sales_date: normalizedDate });
 }
 
 export async function listCommissionPostings() {
@@ -471,12 +468,8 @@ export async function deleteCommissionPosting(postingId) {
   const posting = await queryOne('SELECT * FROM finance_commission_postings WHERE id = ?', [postingId]);
   if (!posting) throw new Error('سجل العمولة غير موجود');
 
-  await execute(
-    'UPDATE captain_finances SET rent = 0, total_commission = 0 WHERE captain_id = ?',
-    [posting.captain_id]
-  );
   await execute('DELETE FROM finance_commission_postings WHERE id = ?', [postingId]);
-  return { ok: true, captain_id: posting.captain_id };
+  return { ok: true, captain_id: posting.captain_id, sales_date: posting.sales_date };
 }
 
 export async function createVoucher(captainId, { voucher_type, amount, note, voucher_date }) {

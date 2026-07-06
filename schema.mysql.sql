@@ -164,10 +164,11 @@ CREATE TABLE IF NOT EXISTS finance_invoice_postings (
 
 CREATE TABLE IF NOT EXISTS finance_commission_postings (
   id VARCHAR(36) PRIMARY KEY,
-  captain_id VARCHAR(36) NOT NULL UNIQUE,
+  captain_id VARCHAR(36) NOT NULL,
   total_commission DECIMAL(12,2) NOT NULL DEFAULT 0,
   rent DECIMAL(12,2) NOT NULL DEFAULT 0,
   sales_date VARCHAR(10) NOT NULL,
   posted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_captain_commission_sales_date (captain_id, sales_date),
   FOREIGN KEY (captain_id) REFERENCES captains(id) ON DELETE CASCADE
 );

@@ -764,6 +764,92 @@ export async function migrateFinanceInvoicePerDate() {
   }
 }
 
+export async function migrateFinanceCommissionPerDate() {
+  const today = new Date().toISOString().slice(0, 10);
+
+  const postingDateRows = await queryAll(
+    'SELECT id, posted_at, sales_date FROM finance_commission_postings WHERE sales_date IS NULL OR sales_date = ?',
+    ['']
+  );
+  for (const row of postingDateRows) {
+    const salesDate = String(row.posted_at || '').slice(0, 10) || today;
+    await execute('UPDATE finance_commission_postings SET sales_date = ? WHERE id = ?', [salesDate, row.id]);
+  }
+
+  if (isMySQL) {
+    async function dropForeignKeys(table, column) {
+      const fkRows = await queryAll(`
+        SELECT CONSTRAINT_NAME
+        FROM information_schema.KEY_COLUMN_USAGE
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = ?
+          AND COLUMN_NAME = ?
+          AND REFERENCED_TABLE_NAME IS NOT NULL
+      `, [table, column]);
+      for (const fk of fkRows) {
+        await execute(`ALTER TABLE ${table} DROP FOREIGN KEY \`${fk.CONSTRAINT_NAME}\``);
+      }
+    }
+
+    async function foreignKeyExists(table, column) {
+      const fkRows = await queryAll(`
+        SELECT CONSTRAINT_NAME
+        FROM information_schema.KEY_COLUMN_USAGE
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = ?
+          AND COLUMN_NAME = ?
+          AND REFERENCED_TABLE_NAME IS NOT NULL
+      `, [table, column]);
+      return fkRows.length > 0;
+    }
+
+    const uniqPosting = await queryAll(
+      'SHOW INDEX FROM finance_commission_postings WHERE Key_name = ?',
+      ['uniq_captain_commission_sales_date']
+    );
+    if (!uniqPosting.length) {
+      const uniqueCaptain = await queryAll(
+        'SHOW INDEX FROM finance_commission_postings WHERE Key_name = ? AND Non_unique = 0',
+        ['captain_id']
+      );
+      if (uniqueCaptain.length) {
+        await dropForeignKeys('finance_commission_postings', 'captain_id');
+        await execute('ALTER TABLE finance_commission_postings DROP INDEX captain_id');
+      }
+      await execute(
+        'ALTER TABLE finance_commission_postings ADD UNIQUE KEY uniq_captain_commission_sales_date (captain_id, sales_date)'
+      );
+      if (!(await foreignKeyExists('finance_commission_postings', 'captain_id'))) {
+        await execute(
+          'ALTER TABLE finance_commission_postings ADD CONSTRAINT fk_commission_postings_captain FOREIGN KEY (captain_id) REFERENCES captains(id) ON DELETE CASCADE'
+        );
+      }
+    }
+  } else {
+    const postingIndexes = sqlite.prepare('PRAGMA index_list(finance_commission_postings)').all();
+    if (postingIndexes.some(i => i.unique)) {
+      sqlite.exec(`
+        CREATE TABLE IF NOT EXISTS finance_commission_postings_new (
+          id TEXT PRIMARY KEY,
+          captain_id TEXT NOT NULL REFERENCES captains(id) ON DELETE CASCADE,
+          total_commission REAL NOT NULL DEFAULT 0,
+          rent REAL NOT NULL DEFAULT 0,
+          sales_date TEXT NOT NULL,
+          posted_at TEXT DEFAULT (datetime('now')),
+          UNIQUE(captain_id, sales_date)
+        );
+        INSERT INTO finance_commission_postings_new (id, captain_id, total_commission, rent, sales_date, posted_at)
+        SELECT id, captain_id, total_commission, rent,
+          COALESCE(NULLIF(sales_date, ''), substr(posted_at, 1, 10)),
+          posted_at
+        FROM finance_commission_postings;
+        DROP TABLE finance_commission_postings;
+        ALTER TABLE finance_commission_postings_new RENAME TO finance_commission_postings;
+      `);
+    }
+  }
+}
+
 export async function migrateFinanceVoucherDateColumn() {
   if (isMySQL) {
     const cols = await queryAll("SHOW COLUMNS FROM finance_vouchers LIKE 'voucher_date'");
