@@ -250,7 +250,11 @@ app.delete('/api/users/:id', async (req, res) => {
 
 app.get('/api/captains', async (_, res) => {
   const captains = await queryAll('SELECT * FROM captains ORDER BY created_at DESC');
-  res.json(captains.map(sanitizeCaptain));
+  const balances = await finance.getCaptainBalancesMap();
+  res.json(captains.map(captain => ({
+    ...sanitizeCaptain(captain),
+    balance: Number(balances[captain.id] || 0),
+  })));
 });
 
 app.get('/api/captains/:id', async (req, res) => {
@@ -725,6 +729,26 @@ app.get('/api/finance/commission-postings', async (_, res) => {
   res.json(await finance.listCommissionPostings());
 });
 
+app.get('/api/reports/sales', async (req, res) => {
+  const { period = 'day', date, captain_id } = req.query;
+  res.json(await finance.getSalesReport({ period, date, captain_id }));
+});
+
+app.get('/api/reports/commissions', async (req, res) => {
+  const { period = 'day', date, captain_id } = req.query;
+  res.json(await finance.getCommissionReport({ period, date, captain_id }));
+});
+
+app.get('/api/reports/rent', async (req, res) => {
+  const { period = 'day', date, captain_id } = req.query;
+  res.json(await finance.getRentReport({ period, date, captain_id }));
+});
+
+app.get('/api/reports/stores', async (req, res) => {
+  const { period = 'day', date } = req.query;
+  res.json(await finance.getStoresReport({ period, date }));
+});
+
 app.delete('/api/finance/commission-postings/:id', async (req, res) => {
   try {
     res.json(await finance.deleteCommissionPosting(req.params.id));
@@ -759,6 +783,14 @@ app.get('/api/attendance/report', async (req, res) => {
     captain_id: captain_id || undefined,
   });
   res.json(report);
+});
+
+app.get('/api/reports/attendance-monthly', async (req, res) => {
+  const { date, captain_id } = req.query;
+  res.json(await attendance.getAttendanceMonthlyMatrix({
+    date: date || undefined,
+    captain_id: captain_id || undefined,
+  }));
 });
 
 // ─── Scheduler (checks every 30s) ───────────────────────────

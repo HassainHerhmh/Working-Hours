@@ -217,3 +217,94 @@ export async function getAttendanceReport({ period = 'day', date, captain_id }) 
     rows: filteredRows,
   };
 }
+
+export async function getAttendanceMonthlyMatrix({ date, captain_id }) {
+  const range = getDateRange('month', date);
+  const captains = captain_id
+    ? [await queryOne('SELECT id, name, captain_number FROM captains WHERE id = ?', [captain_id])].filter(Boolean)
+    : await queryAll('SELECT id, name, captain_number FROM captains ORDER BY name');
+
+  const checkins = await queryAll(
+    `SELECT captain_id, check_date, checked_in_at FROM attendance_checkins
+     WHERE check_date >= ? AND check_date <= ?`,
+    [range.from, range.to]
+  );
+  const checkinMap = new Map(checkins.map(c => [`${c.captain_id}:${c.check_date}`, c]));
+
+  const allShifts = await queryAll(
+    'SELECT captain_id, day_of_week FROM shifts WHERE is_active = 1'
+  );
+  const shiftMap = new Map();
+  for (const s of allShifts) {
+    if (!shiftMap.has(s.captain_id)) shiftMap.set(s.captain_id, new Set());
+    shiftMap.get(s.captain_id).add(s.day_of_week);
+  }
+
+  const days = range.dates.map((dateKey) => {
+    const d = parseDateKey(dateKey);
+    return {
+      date: dateKey,
+      day: d.getDate(),
+      day_name: DAYS[d.getDay()],
+      day_of_week: d.getDay(),
+    };
+  });
+
+  const rows = captains.map((captain) => {
+    const shiftDays = shiftMap.get(captain.id) || new Set();
+    let present = 0;
+    let absent = 0;
+    let off = 0;
+
+    const cells = days.map((day) => {
+      const hasShift = shiftDays.has(day.day_of_week);
+      const checkin = checkinMap.get(`${captain.id}:${day.date}`);
+
+      let status;
+      if (!hasShift) {
+        status = 'off';
+        off += 1;
+      } else if (checkin) {
+        status = 'present';
+        present += 1;
+      } else {
+        status = 'absent';
+        absent += 1;
+      }
+
+      return {
+        date: day.date,
+        day: day.day,
+        day_name: day.day_name,
+        status,
+        has_shift: hasShift,
+        checked_in_at: checkin?.checked_in_at || null,
+        checked_in_time: formatCheckInTime(checkin?.checked_in_at),
+      };
+    });
+
+    return {
+      captain_id: captain.id,
+      captain_name: captain.name,
+      captain_number: captain.captain_number,
+      summary: { present, absent, off },
+      cells,
+    };
+  });
+
+  const summary = rows.reduce((acc, row) => {
+    acc.present += row.summary.present;
+    acc.absent += row.summary.absent;
+    acc.off += row.summary.off;
+    return acc;
+  }, { present: 0, absent: 0, off: 0 });
+
+  return {
+    period: 'month',
+    from: range.from,
+    to: range.to,
+    days,
+    rows,
+    summary,
+  };
+}

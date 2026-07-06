@@ -248,6 +248,75 @@ async function getCaptainVouchers(captainId) {
   );
 }
 
+export async function getCaptainBalancesMap() {
+  const config = await getFinanceConfig();
+  const invoiceRows = await queryAll(
+    `SELECT captain_id,
+      COALESCE(SUM(total_invoices), 0) AS total_invoices,
+      COALESCE(SUM(transfers_debts), 0) AS transfers_debts
+     FROM finance_invoice_postings
+     GROUP BY captain_id`
+  );
+  const commissionRows = await queryAll(
+    `SELECT captain_id,
+      COALESCE(SUM(total_commission), 0) AS total_commission,
+      COALESCE(SUM(rent), 0) AS rent
+     FROM finance_commission_postings
+     GROUP BY captain_id`
+  );
+  const voucherRows = await queryAll('SELECT * FROM finance_vouchers');
+
+  const map = new Map();
+  for (const row of invoiceRows) {
+    map.set(row.captain_id, {
+      total_invoices: num(row.total_invoices),
+      transfers_debts: num(row.transfers_debts),
+      total_commission: 0,
+      rent: 0,
+      vouchers: [],
+    });
+  }
+  for (const row of commissionRows) {
+    const current = map.get(row.captain_id) || {
+      total_invoices: 0,
+      transfers_debts: 0,
+      total_commission: 0,
+      rent: 0,
+      vouchers: [],
+    };
+    current.total_commission = num(row.total_commission);
+    current.rent = num(row.rent);
+    map.set(row.captain_id, current);
+  }
+  for (const voucher of voucherRows) {
+    const current = map.get(voucher.captain_id) || {
+      total_invoices: 0,
+      transfers_debts: 0,
+      total_commission: 0,
+      rent: 0,
+      vouchers: [],
+    };
+    current.vouchers.push(voucher);
+    map.set(voucher.captain_id, current);
+  }
+
+  const balances = {};
+  for (const [captainId, row] of map.entries()) {
+    const summary = buildFinanceSummary(
+      {
+        transfers_debts: row.transfers_debts,
+        rent: row.rent,
+        total_commission: row.total_commission,
+      },
+      row.total_invoices > 0 ? [{ amount: row.total_invoices }] : [],
+      config,
+      row.vouchers
+    );
+    balances[captainId] = summary.remaining_for_company;
+  }
+  return balances;
+}
+
 export async function getCaptainFinance(captainId, { period, date, sales_date } = {}) {
   const captain = await queryOne('SELECT id, name, captain_number FROM captains WHERE id = ?', [captainId]);
   if (!captain) throw new Error('الكابتن غير موجود');
@@ -538,4 +607,156 @@ export async function listAllVouchers(captainId) {
     JOIN captains c ON c.id = v.captain_id
     ORDER BY v.voucher_date DESC, v.created_at DESC
   `);
+}
+
+function getReportRange(period = 'day', date) {
+  return getDateRange(['day', 'week', 'month'].includes(period) ? period : 'day', date);
+}
+
+export async function getSalesReport({ period = 'day', date, captain_id }) {
+  const range = getReportRange(period, date);
+  const rows = await queryAll(
+    `SELECT p.*, c.name AS captain_name, c.captain_number
+     FROM finance_invoice_postings p
+     JOIN captains c ON c.id = p.captain_id
+     WHERE p.sales_date >= ? AND p.sales_date <= ?
+     ${captain_id ? 'AND p.captain_id = ?' : ''}
+     ORDER BY p.sales_date DESC, c.name ASC`,
+    captain_id ? [range.from, range.to, captain_id] : [range.from, range.to]
+  );
+
+  const summary = rows.reduce((acc, row) => {
+    acc.total_invoices += num(row.total_invoices);
+    acc.transfers_debts += num(row.transfers_debts);
+    return acc;
+  }, { total_invoices: 0, transfers_debts: 0 });
+
+  return { period, from: range.from, to: range.to, rows, summary };
+}
+
+export async function getCommissionReport({ period = 'day', date, captain_id }) {
+  const range = getReportRange(period, date);
+  const config = await getFinanceConfig();
+  const rows = await queryAll(
+    `SELECT p.*, c.name AS captain_name, c.captain_number
+     FROM finance_commission_postings p
+     JOIN captains c ON c.id = p.captain_id
+     WHERE p.sales_date >= ? AND p.sales_date <= ?
+     ${captain_id ? 'AND p.captain_id = ?' : ''}
+     ORDER BY p.sales_date DESC, c.name ASC`,
+    captain_id ? [range.from, range.to, captain_id] : [range.from, range.to]
+  );
+
+  const mappedRows = rows.map((row) => {
+    const total_commission = num(row.total_commission);
+    const rent = num(row.rent);
+    const company_commission = num(total_commission * num(config.company_commission_rate) / 100);
+    return {
+      ...row,
+      total_commission,
+      rent,
+      company_commission,
+      captain_commission: num(total_commission - company_commission),
+      net_delivery_fees: num(total_commission - company_commission - rent),
+    };
+  });
+
+  const summary = mappedRows.reduce((acc, row) => {
+    acc.total_commission += row.total_commission;
+    acc.rent += row.rent;
+    acc.company_commission += row.company_commission;
+    acc.captain_commission += row.captain_commission;
+    acc.net_delivery_fees += row.net_delivery_fees;
+    return acc;
+  }, {
+    total_commission: 0,
+    rent: 0,
+    company_commission: 0,
+    captain_commission: 0,
+    net_delivery_fees: 0,
+  });
+
+  return {
+    period,
+    from: range.from,
+    to: range.to,
+    company_commission_rate: num(config.company_commission_rate),
+    rows: mappedRows,
+    summary,
+  };
+}
+
+export async function getRentReport({ period = 'day', date, captain_id }) {
+  const commissionReport = await getCommissionReport({ period, date, captain_id });
+  return {
+    period: commissionReport.period,
+    from: commissionReport.from,
+    to: commissionReport.to,
+    rows: commissionReport.rows
+      .filter(row => num(row.rent) !== 0)
+      .map(row => ({
+        id: row.id,
+        captain_id: row.captain_id,
+        captain_name: row.captain_name,
+        captain_number: row.captain_number,
+        sales_date: row.sales_date,
+        posted_at: row.posted_at,
+        rent: row.rent,
+      })),
+    summary: {
+      total_rent: commissionReport.summary.rent,
+    },
+  };
+}
+
+export async function getStoresReport({ period = 'day', date }) {
+  const range = getReportRange(period, date);
+  const rows = await queryAll(
+    `SELECT s.id AS store_id, s.name AS store_name, i.sales_date,
+        c.id AS captain_id, c.name AS captain_name, c.captain_number, i.amount
+     FROM captain_store_invoices i
+     JOIN finance_stores s ON s.id = i.store_id
+     JOIN captains c ON c.id = i.captain_id
+     WHERE i.sales_date >= ? AND i.sales_date <= ?
+     ORDER BY i.sales_date DESC, s.name ASC, c.name ASC`,
+    [range.from, range.to]
+  );
+
+  const byStore = new Map();
+  for (const row of rows) {
+    const current = byStore.get(row.store_id) || {
+      store_id: row.store_id,
+      store_name: row.store_name,
+      total_sales: 0,
+      captain_ids: new Set(),
+      entries: [],
+    };
+    current.total_sales += num(row.amount);
+    current.captain_ids.add(row.captain_id);
+    current.entries.push({
+      captain_id: row.captain_id,
+      captain_name: row.captain_name,
+      captain_number: row.captain_number,
+      sales_date: row.sales_date,
+      amount: num(row.amount),
+    });
+    byStore.set(row.store_id, current);
+  }
+
+  const stores = Array.from(byStore.values()).map((store) => ({
+    store_id: store.store_id,
+    store_name: store.store_name,
+    total_sales: num(store.total_sales),
+    captains_count: store.captain_ids.size,
+    entries_count: store.entries.length,
+    entries: store.entries,
+  }));
+
+  const summary = stores.reduce((acc, store) => {
+    acc.total_sales += store.total_sales;
+    acc.entries_count += store.entries_count;
+    return acc;
+  }, { total_sales: 0, entries_count: 0, stores_count: stores.length });
+
+  return { period, from: range.from, to: range.to, stores, summary };
 }
