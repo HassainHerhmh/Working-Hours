@@ -343,6 +343,7 @@ export async function getCaptainFinance(captainId, { period, date, sales_date } 
 
   let invoices = [];
   let transfers_debts = 0;
+  let orders_count = 0;
   let rent = num(finance?.rent);
   let total_commission = num(finance?.total_commission);
   let total_invoices = 0;
@@ -356,6 +357,7 @@ export async function getCaptainFinance(captainId, { period, date, sales_date } 
     );
     invoices = await getCaptainInvoices(captainId, normalizedSalesDate);
     transfers_debts = posting ? num(posting.transfers_debts) : 0;
+    orders_count = posting ? Number(posting.orders_count || 0) : 0;
     total_invoices = posting
       ? num(posting.total_invoices)
       : invoices.reduce((s, row) => s + num(row.amount), 0);
@@ -375,6 +377,7 @@ export async function getCaptainFinance(captainId, { period, date, sales_date } 
       [captainId, range.from, range.to]
     );
     transfers_debts = postingsInRange.reduce((s, p) => s + num(p.transfers_debts), 0);
+    orders_count = postingsInRange.reduce((s, p) => s + Number(p.orders_count || 0), 0);
     total_invoices = postingsInRange.reduce((s, p) => s + num(p.total_invoices), 0);
     invoices = await getCaptainInvoices(captainId, { from: range.from, to: range.to });
 
@@ -415,6 +418,7 @@ export async function getCaptainFinance(captainId, { period, date, sales_date } 
     to: range?.to || null,
     sales_date: normalizedSalesDate,
     previous_balance,
+    orders_count,
     ...summary,
     total_invoices,
   };
@@ -443,7 +447,13 @@ export async function saveCaptainFinance(captainId, data) {
         [uuid(), captainId, inv.store_id, amount, sales_date]
       );
     }
-    await recordInvoicePosting(captainId, totalInvoices, num(data.transfers_debts), sales_date);
+    await recordInvoicePosting(
+      captainId,
+      totalInvoices,
+      Number(data.orders_count || 0),
+      num(data.transfers_debts),
+      sales_date
+    );
   }
 
   return getCaptainFinance(captainId, { sales_date });
@@ -454,8 +464,8 @@ function normalizeSalesDate(value) {
   return /^\d{4}-\d{2}-\d{2}$/.test(key) ? key : yemenDateKey();
 }
 
-async function recordInvoicePosting(captainId, totalInvoices, transfersDebts, salesDate) {
-  if (totalInvoices <= 0 && transfersDebts <= 0) return;
+async function recordInvoicePosting(captainId, totalInvoices, ordersCount, transfersDebts, salesDate) {
+  if (totalInvoices <= 0 && transfersDebts <= 0 && Number(ordersCount || 0) <= 0) return;
 
   const sales_date = normalizeSalesDate(salesDate);
   const existing = await queryOne(
@@ -465,13 +475,13 @@ async function recordInvoicePosting(captainId, totalInvoices, transfersDebts, sa
 
   if (existing) {
     await execute(
-      `UPDATE finance_invoice_postings SET total_invoices = ?, transfers_debts = ?, posted_at = ${isMySQL ? 'NOW()' : "datetime('now')"} WHERE id = ?`,
-      [num(totalInvoices), num(transfersDebts), existing.id]
+      `UPDATE finance_invoice_postings SET total_invoices = ?, orders_count = ?, transfers_debts = ?, posted_at = ${isMySQL ? 'NOW()' : "datetime('now')"} WHERE id = ?`,
+      [num(totalInvoices), Number(ordersCount || 0), num(transfersDebts), existing.id]
     );
   } else {
     await execute(
-      'INSERT INTO finance_invoice_postings (id, captain_id, total_invoices, transfers_debts, sales_date) VALUES (?, ?, ?, ?, ?)',
-      [uuid(), captainId, num(totalInvoices), num(transfersDebts), sales_date]
+      'INSERT INTO finance_invoice_postings (id, captain_id, total_invoices, orders_count, transfers_debts, sales_date) VALUES (?, ?, ?, ?, ?, ?)',
+      [uuid(), captainId, num(totalInvoices), Number(ordersCount || 0), num(transfersDebts), sales_date]
     );
   }
 }
@@ -811,6 +821,7 @@ export async function getSalesReport({ period = 'day', date, captain_id }) {
 
   const mappedRows = rows.map((row) => {
     const total_invoices = num(row.total_invoices);
+    const orders_count = Number(row.orders_count || 0);
     const transfers_debts = num(row.transfers_debts);
     const commission = commissionMap.get(`${row.captain_id}:${row.sales_date}`);
     const vouchers = voucherMap.get(`${row.captain_id}:${row.sales_date}`) || { disbursement: 0, receipt: 0 };
@@ -825,6 +836,7 @@ export async function getSalesReport({ period = 'day', date, captain_id }) {
     return {
       ...row,
       total_invoices,
+      orders_count,
       transfers_debts,
       total_commission,
       rent,
@@ -835,6 +847,7 @@ export async function getSalesReport({ period = 'day', date, captain_id }) {
 
   const summary = mappedRows.reduce((acc, row) => {
     acc.total_invoices += row.total_invoices;
+    acc.orders_count += row.orders_count;
     acc.transfers_debts += row.transfers_debts;
     acc.total_commission += row.total_commission;
     acc.rent += row.rent;
@@ -843,6 +856,7 @@ export async function getSalesReport({ period = 'day', date, captain_id }) {
     return acc;
   }, {
     total_invoices: 0,
+    orders_count: 0,
     transfers_debts: 0,
     total_commission: 0,
     rent: 0,

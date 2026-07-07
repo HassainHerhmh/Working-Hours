@@ -470,6 +470,7 @@ export async function migrateFinanceInvoicePostingsTable() {
         id VARCHAR(36) PRIMARY KEY,
         captain_id VARCHAR(36) NOT NULL UNIQUE,
         total_invoices DECIMAL(12,2) NOT NULL DEFAULT 0,
+        orders_count INT NOT NULL DEFAULT 0,
         transfers_debts DECIMAL(12,2) NOT NULL DEFAULT 0,
         posted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (captain_id) REFERENCES captains(id) ON DELETE CASCADE
@@ -481,6 +482,7 @@ export async function migrateFinanceInvoicePostingsTable() {
         id TEXT PRIMARY KEY,
         captain_id TEXT NOT NULL UNIQUE REFERENCES captains(id) ON DELETE CASCADE,
         total_invoices REAL NOT NULL DEFAULT 0,
+        orders_count INTEGER NOT NULL DEFAULT 0,
         transfers_debts REAL NOT NULL DEFAULT 0,
         posted_at TEXT DEFAULT (datetime('now'))
       )
@@ -503,11 +505,27 @@ export async function migrateFinanceInvoicePostingsTable() {
     );
     if (!exists) {
       await execute(
-        'INSERT INTO finance_invoice_postings (id, captain_id, total_invoices, transfers_debts) VALUES (?, ?, ?, ?)',
-        [uuid(), row.captain_id, row.total_invoices, row.transfers_debts]
+        'INSERT INTO finance_invoice_postings (id, captain_id, total_invoices, orders_count, transfers_debts) VALUES (?, ?, ?, ?, ?)',
+        [uuid(), row.captain_id, row.total_invoices, 0, row.transfers_debts]
       );
     }
   }
+}
+
+export async function migrateFinanceInvoiceOrdersCountColumn() {
+  if (isMySQL) {
+    const cols = await queryAll("SHOW COLUMNS FROM finance_invoice_postings LIKE 'orders_count'");
+    if (!cols.length) {
+      await execute('ALTER TABLE finance_invoice_postings ADD COLUMN orders_count INT NOT NULL DEFAULT 0');
+    }
+  } else {
+    const cols = sqlite.prepare('PRAGMA table_info(finance_invoice_postings)').all();
+    if (!cols.some(c => c.name === 'orders_count')) {
+      sqlite.exec('ALTER TABLE finance_invoice_postings ADD COLUMN orders_count INTEGER NOT NULL DEFAULT 0');
+    }
+  }
+
+  await execute('UPDATE finance_invoice_postings SET orders_count = 0 WHERE orders_count IS NULL');
 }
 
 export async function migrateFinanceInvoiceSalesDateColumn() {
