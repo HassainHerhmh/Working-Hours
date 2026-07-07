@@ -766,6 +766,9 @@ function getReportRange(period = 'day', date) {
 
 export async function getSalesReport({ period = 'day', date, captain_id }) {
   const range = getReportRange(period, date);
+  const config = await getFinanceConfig();
+  const companyRate = num(config.company_commission_rate);
+
   const rows = await queryAll(
     `SELECT p.*, c.name AS captain_name, c.captain_number
      FROM finance_invoice_postings p
@@ -776,13 +779,85 @@ export async function getSalesReport({ period = 'day', date, captain_id }) {
     captain_id ? [range.from, range.to, captain_id] : [range.from, range.to]
   );
 
-  const summary = rows.reduce((acc, row) => {
-    acc.total_invoices += num(row.total_invoices);
-    acc.transfers_debts += num(row.transfers_debts);
-    return acc;
-  }, { total_invoices: 0, transfers_debts: 0 });
+  const commissionRows = await queryAll(
+    `SELECT captain_id, sales_date, total_commission, rent
+     FROM finance_commission_postings
+     WHERE sales_date >= ? AND sales_date <= ?
+     ${captain_id ? 'AND captain_id = ?' : ''}`,
+    captain_id ? [range.from, range.to, captain_id] : [range.from, range.to]
+  );
 
-  return { period, from: range.from, to: range.to, rows, summary };
+  const voucherRows = await queryAll(
+    `SELECT captain_id, voucher_type, amount, voucher_date
+     FROM finance_vouchers
+     WHERE voucher_date >= ? AND voucher_date <= ?
+     ${captain_id ? 'AND captain_id = ?' : ''}`,
+    captain_id ? [range.from, range.to, captain_id] : [range.from, range.to]
+  );
+
+  const commissionMap = new Map();
+  for (const row of commissionRows) {
+    commissionMap.set(`${row.captain_id}:${row.sales_date}`, row);
+  }
+
+  const voucherMap = new Map();
+  for (const row of voucherRows) {
+    const key = `${row.captain_id}:${voucherDateKey(row)}`;
+    const current = voucherMap.get(key) || { disbursement: 0, receipt: 0 };
+    if (row.voucher_type === 'disbursement') current.disbursement += num(row.amount);
+    else current.receipt += num(row.amount);
+    voucherMap.set(key, current);
+  }
+
+  const mappedRows = rows.map((row) => {
+    const total_invoices = num(row.total_invoices);
+    const transfers_debts = num(row.transfers_debts);
+    const commission = commissionMap.get(`${row.captain_id}:${row.sales_date}`);
+    const vouchers = voucherMap.get(`${row.captain_id}:${row.sales_date}`) || { disbursement: 0, receipt: 0 };
+    const total_commission = num(commission?.total_commission);
+    const rent = num(commission?.rent);
+    const company_commission = num(total_commission * companyRate / 100);
+    const remaining_for_company = num(
+      total_invoices - transfers_debts + company_commission + rent
+      + vouchers.disbursement - vouchers.receipt
+    );
+
+    return {
+      ...row,
+      total_invoices,
+      transfers_debts,
+      total_commission,
+      rent,
+      company_commission,
+      remaining_for_company,
+    };
+  });
+
+  const summary = mappedRows.reduce((acc, row) => {
+    acc.total_invoices += row.total_invoices;
+    acc.transfers_debts += row.transfers_debts;
+    acc.total_commission += row.total_commission;
+    acc.rent += row.rent;
+    acc.company_commission += row.company_commission;
+    acc.remaining_for_company += row.remaining_for_company;
+    return acc;
+  }, {
+    total_invoices: 0,
+    transfers_debts: 0,
+    total_commission: 0,
+    rent: 0,
+    company_commission: 0,
+    remaining_for_company: 0,
+  });
+
+  return {
+    period,
+    from: range.from,
+    to: range.to,
+    company_commission_rate: companyRate,
+    rows: mappedRows,
+    summary,
+  };
 }
 
 export async function getCommissionReport({ period = 'day', date, captain_id }) {
