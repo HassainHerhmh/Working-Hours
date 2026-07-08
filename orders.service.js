@@ -111,6 +111,13 @@ export async function listOrders({ status } = {}) {
   return attachItems(rows);
 }
 
+function orderUserFields(payload) {
+  return {
+    userId: str(payload.user_id) || null,
+    userName: str(payload.user_name) || '',
+  };
+}
+
 export async function createOrder(payload) {
   const customer = await upsertCustomer(payload);
   const detailsRows = Array.isArray(payload.items) ? payload.items : [];
@@ -125,10 +132,13 @@ export async function createOrder(payload) {
   const orderId = uuid();
   const orderAddress = str(payload.address_text) || customer.address_text || '';
   const orderMap = str(payload.map_link) || customer.map_link || '';
+  const { userId, userName: rawUserName } = orderUserFields(payload);
+  const userName = rawUserName || 'مستخدم';
   await execute(
     `INSERT INTO \`orders\`
-      (id, customer_id, customer_name, customer_phone, address_text, map_link, delivery_fee, captain_id, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (id, customer_id, customer_name, customer_phone, address_text, map_link, delivery_fee, captain_id, status,
+       created_by_user_id, created_by_user_name, updated_by_user_id, updated_by_user_name)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       orderId,
       customer.id,
@@ -139,6 +149,10 @@ export async function createOrder(payload) {
       num(payload.delivery_fee),
       payload.captain_id || null,
       normalizeStatus(payload.status || 'new'),
+      userId,
+      userName,
+      userId,
+      userName,
     ]
   );
 
@@ -173,10 +187,13 @@ export async function updateOrder(orderId, payload) {
 
   const detailsRows = Array.isArray(payload.items) ? payload.items : null;
   const updatedAt = isMySQL ? 'NOW()' : "datetime('now')";
+  const { userId, userName: rawUserName } = orderUserFields(payload);
+  const nextUserName = rawUserName || existing.updated_by_user_name || existing.created_by_user_name || '';
   await execute(
     `UPDATE \`orders\`
      SET customer_id = ?, customer_name = ?, customer_phone = ?, address_text = ?, map_link = ?,
-         delivery_fee = ?, captain_id = ?, status = ?, updated_at = ${updatedAt}
+         delivery_fee = ?, captain_id = ?, status = ?, updated_at = ${updatedAt},
+         updated_by_user_id = ?, updated_by_user_name = ?
      WHERE id = ?`,
     [
       customer.id,
@@ -187,6 +204,8 @@ export async function updateOrder(orderId, payload) {
       payload.delivery_fee !== undefined ? num(payload.delivery_fee) : num(existing.delivery_fee),
       payload.captain_id !== undefined ? (payload.captain_id || null) : existing.captain_id,
       payload.status ? normalizeStatus(payload.status) : normalizeStatus(existing.status),
+      userId || existing.updated_by_user_id || existing.created_by_user_id || null,
+      nextUserName,
       orderId,
     ]
   );

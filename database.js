@@ -514,6 +514,31 @@ export async function migrateOrdersTables() {
   }
 }
 
+export async function migrateOrdersUserColumns() {
+  const columns = [
+    { name: 'created_by_user_id', mysql: 'VARCHAR(36) NULL', sqlite: 'TEXT' },
+    { name: 'created_by_user_name', mysql: 'VARCHAR(255) DEFAULT \'\'', sqlite: 'TEXT DEFAULT \'\'' },
+    { name: 'updated_by_user_id', mysql: 'VARCHAR(36) NULL', sqlite: 'TEXT' },
+    { name: 'updated_by_user_name', mysql: 'VARCHAR(255) DEFAULT \'\'', sqlite: 'TEXT DEFAULT \'\'' },
+  ];
+
+  if (isMySQL) {
+    for (const col of columns) {
+      const exists = await queryAll(`SHOW COLUMNS FROM orders LIKE '${col.name}'`);
+      if (!exists.length) {
+        await execute(`ALTER TABLE orders ADD COLUMN ${col.name} ${col.mysql}`);
+      }
+    }
+  } else {
+    const cols = sqlite.prepare('PRAGMA table_info(orders)').all();
+    for (const col of columns) {
+      if (!cols.some(c => c.name === col.name)) {
+        sqlite.exec(`ALTER TABLE orders ADD COLUMN ${col.name} ${col.sqlite}`);
+      }
+    }
+  }
+}
+
 export async function migrateFinanceVouchersTable() {
   if (isMySQL) {
     await execute(`
