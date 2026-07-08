@@ -828,6 +828,7 @@ export async function getSalesReport({ period = 'day', date, captain_id }) {
     const total_commission = num(commission?.total_commission);
     const rent = num(commission?.rent);
     const company_commission = num(total_commission * companyRate / 100);
+    const captain_net_commission = num(total_commission - company_commission - rent);
     const remaining_for_company = num(
       total_invoices - transfers_debts + company_commission + rent
       + vouchers.disbursement - vouchers.receipt
@@ -841,6 +842,7 @@ export async function getSalesReport({ period = 'day', date, captain_id }) {
       total_commission,
       rent,
       company_commission,
+      captain_net_commission,
       remaining_for_company,
     };
   });
@@ -852,6 +854,7 @@ export async function getSalesReport({ period = 'day', date, captain_id }) {
     acc.total_commission += row.total_commission;
     acc.rent += row.rent;
     acc.company_commission += row.company_commission;
+    acc.captain_net_commission += row.captain_net_commission;
     acc.remaining_for_company += row.remaining_for_company;
     return acc;
   }, {
@@ -861,6 +864,7 @@ export async function getSalesReport({ period = 'day', date, captain_id }) {
     total_commission: 0,
     rent: 0,
     company_commission: 0,
+    captain_net_commission: 0,
     remaining_for_company: 0,
   });
 
