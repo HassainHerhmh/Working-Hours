@@ -1,6 +1,7 @@
 import { v4 as uuid } from 'uuid';
 import { execute, queryAll, queryOne, isMySQL } from './database.js';
 import { postCompletedOrderFinance } from './finance.service.js';
+import * as smsGw from './smsGateway.service.js';
 
 function num(v) {
   return Math.round((Number(v) || 0) * 100) / 100;
@@ -184,6 +185,36 @@ function orderUserFields(payload) {
   };
 }
 
+async function notifyCaptainOrderAssigned(captainId, { customerName, addressText } = {}) {
+  if (!captainId) return;
+
+  const captain = await queryOne('SELECT id, name, phone FROM captains WHERE id = ?', [captainId]);
+  if (!captain) return;
+
+  const body = `طلب جديد معيّن لك — العميل: ${customerName || '—'}${addressText ? ` — ${addressText}` : ''}`;
+  const logId = uuid();
+
+  await execute(
+    `INSERT INTO sms_log (id, message_id, captain_id, captain_name, captain_phone, body, status, source)
+     VALUES (?, NULL, ?, ?, ?, ?, 'sent', 'order')`,
+    [logId, captain.id, captain.name, captain.phone || '', body]
+  );
+
+  if (captain.phone) {
+    try {
+      await smsGw.queueSms({
+        recipientPhone: captain.phone,
+        message: body,
+        captainId: captain.id,
+        captainName: captain.name,
+        smsType: 'order',
+      });
+    } catch {
+      // تجاهل أخطاء طابور SMS إن كان الرقم غير صالح
+    }
+  }
+}
+
 export async function createOrder(payload) {
   const customer = await upsertCustomer(payload);
   const detailsRows = Array.isArray(payload.items) ? payload.items : [];
@@ -237,6 +268,13 @@ export async function createOrder(payload) {
     );
   }
 
+  if (payload.captain_id) {
+    await notifyCaptainOrderAssigned(payload.captain_id, {
+      customerName: customer.name,
+      addressText: orderAddress,
+    });
+  }
+
   const rows = await listOrders({});
   return rows.find(r => r.id === orderId) || null;
 }
@@ -269,6 +307,8 @@ export async function updateOrder(orderId, payload) {
   const { userId, userName: rawUserName } = orderUserFields(payload);
   const nextUserName = rawUserName || existing.updated_by_user_name || existing.created_by_user_name || '';
   const nextStatus = payload.status ? normalizeStatus(payload.status) : normalizeStatus(existing.status);
+  const prevCaptainId = existing.captain_id || null;
+  const nextCaptainId = payload.captain_id !== undefined ? (payload.captain_id || null) : prevCaptainId;
   await execute(
     `UPDATE \`orders\`
      SET customer_id = ?, customer_name = ?, customer_phone = ?, address_text = ?, map_link = ?,
@@ -282,7 +322,7 @@ export async function updateOrder(orderId, payload) {
       str(payload.address_text) || customer.address_text || '',
       str(payload.map_link) || customer.map_link || '',
       payload.delivery_fee !== undefined ? num(payload.delivery_fee) : num(existing.delivery_fee),
-      payload.captain_id !== undefined ? (payload.captain_id || null) : existing.captain_id,
+      nextCaptainId,
       nextStatus,
       payload.payment_type !== undefined ? normalizePaymentType(payload.payment_type) : normalizePaymentType(existing.payment_type),
       userId || existing.updated_by_user_id || existing.created_by_user_id || null,
@@ -315,6 +355,13 @@ export async function updateOrder(orderId, payload) {
         [uuid(), orderId, item.store_id, storeName, item.details]
       );
     }
+  }
+
+  if (nextCaptainId && nextCaptainId !== prevCaptainId) {
+    await notifyCaptainOrderAssigned(nextCaptainId, {
+      customerName: customer.name,
+      addressText: str(payload.address_text) || customer.address_text || existing.address_text || '',
+    });
   }
 
   const rows = await listOrders({});
