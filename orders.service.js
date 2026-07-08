@@ -1,5 +1,6 @@
 import { v4 as uuid } from 'uuid';
 import { execute, queryAll, queryOne, isMySQL } from './database.js';
+import { postCompletedOrderFinance } from './finance.service.js';
 
 function num(v) {
   return Math.round((Number(v) || 0) * 100) / 100;
@@ -340,6 +341,11 @@ export async function updateCaptainOrderStatus(captainId, orderId, nextStatus) {
 
   const order = await queryOne('SELECT * FROM `orders` WHERE id = ?', [orderId]);
   const [enriched] = await attachItems([order]);
+
+  if (status === 'done') {
+    await postCompletedOrderFinance(enriched);
+  }
+
   return enriched;
 }
 

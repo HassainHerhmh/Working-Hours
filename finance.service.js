@@ -464,6 +464,90 @@ function normalizeSalesDate(value) {
   return /^\d{4}-\d{2}-\d{2}$/.test(key) ? key : yemenDateKey();
 }
 
+function normalizePaymentType(value) {
+  const key = String(value || '').trim().toLowerCase();
+  return ['cash', 'transfer', 'credit'].includes(key) ? key : 'cash';
+}
+
+export async function postCompletedOrderFinance(order) {
+  if (!order?.captain_id) throw new Error('الكابتن غير موجود للطلب');
+  if (order.finance_posted_at) {
+    return { skipped: true, reason: 'already_posted' };
+  }
+
+  const captainId = order.captain_id;
+  const salesDate = normalizeSalesDate(order.done_at || order.updated_at || order.created_at);
+  const validItems = (Array.isArray(order.items) ? order.items : [])
+    .map(item => ({
+      store_id: item.store_id,
+      amount: num(item.invoice_amount),
+    }))
+    .filter(item => item.store_id && item.amount > 0);
+
+  let invoiceOnlyTotal = 0;
+  for (const item of validItems) {
+    invoiceOnlyTotal += item.amount;
+    const existingItem = await queryOne(
+      'SELECT id, amount FROM captain_store_invoices WHERE captain_id = ? AND store_id = ? AND sales_date = ?',
+      [captainId, item.store_id, salesDate]
+    );
+
+    if (existingItem) {
+      await execute(
+        'UPDATE captain_store_invoices SET amount = ? WHERE id = ?',
+        [num(num(existingItem.amount) + item.amount), existingItem.id]
+      );
+    } else {
+      await execute(
+        'INSERT INTO captain_store_invoices (id, captain_id, store_id, amount, sales_date) VALUES (?, ?, ?, ?, ?)',
+        [uuid(), captainId, item.store_id, item.amount, salesDate]
+      );
+    }
+  }
+
+  const deliveryFee = num(order.delivery_fee);
+  const grandTotal = num(invoiceOnlyTotal + deliveryFee);
+  const creditAmount = normalizePaymentType(order.payment_type) === 'credit' ? grandTotal : 0;
+
+  const posting = await queryOne(
+    'SELECT id, total_invoices, orders_count, transfers_debts FROM finance_invoice_postings WHERE captain_id = ? AND sales_date = ?',
+    [captainId, salesDate]
+  );
+
+  if (posting) {
+    await execute(
+      `UPDATE finance_invoice_postings
+       SET total_invoices = ?, orders_count = ?, transfers_debts = ?, posted_at = ${isMySQL ? 'NOW()' : "datetime('now')"}
+       WHERE id = ?`,
+      [
+        num(num(posting.total_invoices) + grandTotal),
+        Number(posting.orders_count || 0) + 1,
+        num(num(posting.transfers_debts) + creditAmount),
+        posting.id,
+      ]
+    );
+  } else {
+    await execute(
+      'INSERT INTO finance_invoice_postings (id, captain_id, total_invoices, orders_count, transfers_debts, sales_date) VALUES (?, ?, ?, ?, ?, ?)',
+      [uuid(), captainId, grandTotal, 1, creditAmount, salesDate]
+    );
+  }
+
+  const postedAt = isMySQL ? 'NOW()' : "datetime('now')";
+  await execute(
+    `UPDATE \`orders\` SET finance_posted_at = ${postedAt} WHERE id = ?`,
+    [order.id]
+  );
+
+  return {
+    sales_date: salesDate,
+    invoice_total: invoiceOnlyTotal,
+    delivery_fee: deliveryFee,
+    grand_total: grandTotal,
+    credit_amount: creditAmount,
+  };
+}
+
 async function recordInvoicePosting(captainId, totalInvoices, ordersCount, transfersDebts, salesDate) {
   if (totalInvoices <= 0 && transfersDebts <= 0 && Number(ordersCount || 0) <= 0) return;
 
@@ -1012,4 +1096,270 @@ export async function getStoresReport({ period = 'day', date, from, to }) {
   }, { total_sales: 0, entries_count: 0, stores_count: stores.length });
 
   return { period, from: range.from, to: range.to, stores, summary };
+}
+
+const PAYMENT_LABELS = { cash: 'كاش', transfer: 'حوالة', credit: 'آجل' };
+
+function balanceStatus(balance) {
+  return num(balance) >= 0 ? 'له' : 'عليه';
+}
+
+function applyBalanceChange(balance, debit, credit) {
+  return num(num(balance) + num(credit) - num(debit));
+}
+
+function buildStatementRow(row) {
+  const balance = num(row.balance);
+  return {
+    journal_date: row.journal_date || '',
+    reference_type: row.reference_type || '',
+    reference_id: row.reference_id ?? '',
+    account_name: row.account_name || '',
+    debit: num(row.debit),
+    credit: num(row.credit),
+    balance,
+    balance_status: balanceStatus(balance),
+    notes: row.notes || '',
+    is_opening: !!row.is_opening,
+  };
+}
+
+export async function getCaptainAccountStatement({
+  captain_id,
+  period = 'month',
+  date,
+  from,
+  to,
+  mode = 'detailed',
+  include_opening = true,
+}) {
+  if (!captain_id) throw new Error('الكابتن مطلوب');
+
+  const range = getReportRange(period, date, from, to);
+  const config = await getFinanceConfig();
+  const companyRate = num(config.company_commission_rate);
+
+  const captain = await queryOne(
+    'SELECT id, name, captain_number FROM captains WHERE id = ?',
+    [captain_id]
+  );
+  if (!captain) throw new Error('الكابتن غير موجود');
+
+  const allVouchers = await queryAll(
+    `SELECT v.*, c.name AS counterpart_name, c.captain_number AS counterpart_number
+     FROM finance_vouchers v
+     LEFT JOIN captains c ON c.id = v.counterpart_captain_id
+     WHERE v.captain_id = ?
+     ORDER BY v.voucher_date ASC, v.created_at ASC`,
+    [captain_id]
+  );
+
+  const events = [];
+  let openingBalance = 0;
+
+  if (include_opening) {
+    const prev = await buildPreviousBalance(captain_id, range, config, allVouchers);
+    if (prev) {
+      openingBalance = num(-prev.remaining_for_company);
+      const openingDate = prev.to || dayBeforeKey(range.from);
+      events.push({
+        sort_key: `${openingDate}T00:00:00.000|00`,
+        journal_date: openingDate,
+        reference_type: 'opening',
+        reference_id: '',
+        account_name: captain.name,
+        debit: openingBalance < 0 ? Math.abs(openingBalance) : 0,
+        credit: openingBalance >= 0 ? openingBalance : 0,
+        notes: `رصيد سابق حتى ${openingDate}`,
+        is_opening: true,
+        preset_balance: openingBalance,
+      });
+    }
+  }
+
+  if (mode === 'detailed') {
+    const orders = await queryAll(
+      `SELECT o.*,
+        (SELECT COALESCE(SUM(invoice_amount), 0) FROM order_items WHERE order_id = o.id) AS items_total
+       FROM \`orders\` o
+       WHERE o.captain_id = ? AND o.status = 'done'
+       ORDER BY COALESCE(o.done_at, o.updated_at) ASC`,
+      [captain_id]
+    );
+
+    for (const order of orders) {
+      const orderDate = toDateKey(order.done_at || order.updated_at);
+      if (!inDateRange(orderDate, range.from, range.to)) continue;
+
+      const grandTotal = num(num(order.items_total) + num(order.delivery_fee));
+      if (grandTotal <= 0) continue;
+
+      const paymentType = normalizePaymentType(order.payment_type);
+      const orderRef = String(order.id || '').slice(-6).toUpperCase();
+      const sortBase = `${orderDate}T12:00:00.000|10|${orderRef}`;
+
+      events.push({
+        sort_key: sortBase,
+        journal_date: orderDate,
+        reference_type: 'order',
+        reference_id: orderRef,
+        account_name: captain.name,
+        debit: grandTotal,
+        credit: 0,
+        notes: `طلب #${orderRef} — ${order.customer_name || ''} — ${PAYMENT_LABELS[paymentType] || paymentType}`,
+      });
+
+      if (paymentType === 'credit') {
+        events.push({
+          sort_key: `${orderDate}T12:00:01.000|11|${orderRef}`,
+          journal_date: orderDate,
+          reference_type: 'credit',
+          reference_id: orderRef,
+          account_name: captain.name,
+          debit: 0,
+          credit: grandTotal,
+          notes: `آجل طلب #${orderRef}`,
+        });
+      }
+    }
+  } else {
+    const postings = await queryAll(
+      `SELECT * FROM finance_invoice_postings
+       WHERE captain_id = ? AND sales_date >= ? AND sales_date <= ?
+       ORDER BY sales_date ASC`,
+      [captain_id, range.from, range.to]
+    );
+
+    for (const posting of postings) {
+      const salesDate = posting.sales_date || toDateKey(posting.posted_at);
+      const totalInvoices = num(posting.total_invoices);
+      const transfersDebts = num(posting.transfers_debts);
+      const ordersCount = Number(posting.orders_count || 0);
+
+      if (totalInvoices > 0) {
+        events.push({
+          sort_key: `${salesDate}T08:00:00.000|10|inv`,
+          journal_date: salesDate,
+          reference_type: 'invoice_posting',
+          reference_id: ordersCount || '',
+          account_name: captain.name,
+          debit: totalInvoices,
+          credit: 0,
+          notes: ordersCount
+            ? `ترحيل فواتير — ${ordersCount} طلب`
+            : 'ترحيل فواتير يومي',
+        });
+      }
+
+      if (transfersDebts > 0) {
+        events.push({
+          sort_key: `${salesDate}T08:00:01.000|11|credit`,
+          journal_date: salesDate,
+          reference_type: 'credit',
+          reference_id: ordersCount || '',
+          account_name: captain.name,
+          debit: 0,
+          credit: transfersDebts,
+          notes: `آجل يوم ${salesDate}`,
+        });
+      }
+    }
+  }
+
+  const commissionPostings = await queryAll(
+    `SELECT * FROM finance_commission_postings
+     WHERE captain_id = ? AND sales_date >= ? AND sales_date <= ?
+     ORDER BY sales_date ASC`,
+    [captain_id, range.from, range.to]
+  );
+
+  for (const posting of commissionPostings) {
+    const salesDate = commissionSalesDateKey(posting);
+    const totalCommission = num(posting.total_commission);
+    const rent = num(posting.rent);
+    if (totalCommission <= 0 && rent <= 0) continue;
+
+    const companyCommission = num(totalCommission * companyRate / 100);
+    events.push({
+      sort_key: `${salesDate}T09:00:00.000|20|commission`,
+      journal_date: salesDate,
+      reference_type: 'commission',
+      reference_id: '',
+      account_name: captain.name,
+      debit: num(companyCommission + rent),
+      credit: totalCommission,
+      notes: `عمولة يوم ${salesDate}${rent > 0 ? ` — إيجار ${rent}` : ''}`,
+    });
+  }
+
+  const periodVouchers = allVouchers.filter(v => voucherInDateRange(v, range.from, range.to));
+  for (const voucher of periodVouchers) {
+    const voucherDate = voucherDateKey(voucher);
+    const amount = num(voucher.amount);
+    if (amount <= 0) continue;
+
+    const isTransfer = !!voucher.transfer_group_id;
+    const isReceipt = voucher.voucher_type === 'receipt';
+    let referenceType = isReceipt ? 'receipt' : 'disbursement';
+    let notes = voucher.note || '';
+
+    if (isTransfer) {
+      referenceType = isReceipt ? 'transfer_out' : 'transfer_in';
+      const counterpart = voucher.counterpart_name
+        ? `${voucher.counterpart_name}${voucher.counterpart_number ? ` (${voucher.counterpart_number})` : ''}`
+        : '';
+      notes = notes || (isReceipt
+        ? `تحويل إلى ${counterpart || 'كابتن'}`
+        : `تحويل من ${counterpart || 'كابتن'}`);
+    } else {
+      notes = notes || (isReceipt ? 'سند قبض' : 'سند صرف');
+    }
+
+    events.push({
+      sort_key: `${voucherDate}T10:00:00.000|30|${voucher.id}`,
+      journal_date: voucherDate,
+      reference_type: referenceType,
+      reference_id: voucher.id?.slice(0, 8) || '',
+      account_name: captain.name,
+      debit: isReceipt ? amount : 0,
+      credit: isReceipt ? 0 : amount,
+      notes,
+    });
+  }
+
+  events.sort((a, b) => String(a.sort_key).localeCompare(String(b.sort_key)));
+
+  let running = openingBalance;
+  const rows = [];
+  for (const event of events) {
+    if (event.is_opening) {
+      running = num(event.preset_balance);
+      rows.push(buildStatementRow({ ...event, balance: running }));
+      continue;
+    }
+    running = applyBalanceChange(running, event.debit, event.credit);
+    rows.push(buildStatementRow({ ...event, balance: running }));
+  }
+
+  const totalDebit = rows.reduce((sum, row) => sum + (row.is_opening ? 0 : num(row.debit)), 0);
+  const totalCredit = rows.reduce((sum, row) => sum + (row.is_opening ? 0 : num(row.credit)), 0);
+  const closingBalance = rows.length ? num(rows[rows.length - 1].balance) : openingBalance;
+
+  return {
+    success: true,
+    period,
+    from: range.from,
+    to: range.to,
+    mode,
+    captain,
+    rows,
+    summary: {
+      opening_balance: openingBalance,
+      closing_balance: closingBalance,
+      closing_status: balanceStatus(closingBalance),
+      total_debit: num(totalDebit),
+      total_credit: num(totalCredit),
+      entries_count: rows.filter(r => !r.is_opening).length,
+    },
+  };
 }

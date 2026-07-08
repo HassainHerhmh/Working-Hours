@@ -579,6 +579,20 @@ export async function migrateOrdersStatusTimestamps() {
   }
 }
 
+export async function migrateOrdersFinancePostedColumn() {
+  if (isMySQL) {
+    const cols = await queryAll("SHOW COLUMNS FROM orders LIKE 'finance_posted_at'");
+    if (!cols.length) {
+      await execute('ALTER TABLE orders ADD COLUMN finance_posted_at TIMESTAMP NULL');
+    }
+  } else {
+    const cols = sqlite.prepare('PRAGMA table_info(orders)').all();
+    if (!cols.some(c => c.name === 'finance_posted_at')) {
+      sqlite.exec('ALTER TABLE orders ADD COLUMN finance_posted_at TEXT');
+    }
+  }
+}
+
 export async function migrateOrderItemsInvoiceAmount() {
   if (isMySQL) {
     const cols = await queryAll("SHOW COLUMNS FROM order_items LIKE 'invoice_amount'");

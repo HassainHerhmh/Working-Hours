@@ -6,7 +6,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
-import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn, migrateShiftPeriodColumns, migrateShiftReminderTable, migrateAttendanceTable, migrateFinanceTables, migrateOrdersTables, migrateOrdersUserColumns, migrateOrdersPaymentTypeColumn, migrateOrdersStatusTimestamps, migrateOrderItemsInvoiceAmount, migrateFinanceVouchersTable, migrateFinanceInvoicePostingsTable, migrateFinanceInvoiceOrdersCountColumn, migrateFinanceInvoiceSalesDateColumn, migrateFinanceInvoicePerDate, migrateFinanceCommissionPostingsTable, migrateFinanceCommissionSalesDateColumn, migrateFinanceCommissionPerDate, migrateFinanceVoucherDateColumn, migrateFinanceVoucherTransferColumns, migrateFixTransferVoucherTypes, toDbDateTime } from './database.js';
+import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn, migrateShiftPeriodColumns, migrateShiftReminderTable, migrateAttendanceTable, migrateFinanceTables, migrateOrdersTables, migrateOrdersUserColumns, migrateOrdersPaymentTypeColumn, migrateOrdersStatusTimestamps, migrateOrdersFinancePostedColumn, migrateOrderItemsInvoiceAmount, migrateFinanceVouchersTable, migrateFinanceInvoicePostingsTable, migrateFinanceInvoiceOrdersCountColumn, migrateFinanceInvoiceSalesDateColumn, migrateFinanceInvoicePerDate, migrateFinanceCommissionPostingsTable, migrateFinanceCommissionSalesDateColumn, migrateFinanceCommissionPerDate, migrateFinanceVoucherDateColumn, migrateFinanceVoucherTransferColumns, migrateFixTransferVoucherTypes, toDbDateTime } from './database.js';
 import * as smsGw from './smsGateway.service.js';
 import * as shiftReminder from './shiftReminder.service.js';
 import * as attendance from './attendance.service.js';
@@ -123,6 +123,7 @@ async function seedIfEmpty() {
   await migrateOrdersUserColumns();
   await migrateOrdersPaymentTypeColumn();
   await migrateOrdersStatusTimestamps();
+  await migrateOrdersFinancePostedColumn();
   await migrateOrderItemsInvoiceAmount();
   await migrateFinanceVouchersTable();
   await migrateFinanceInvoicePostingsTable();
@@ -773,6 +774,26 @@ app.get('/api/reports/rent', async (req, res) => {
 app.get('/api/reports/stores', async (req, res) => {
   const { period = 'day', date, from, to } = req.query;
   res.json(await finance.getStoresReport({ period, date, from, to }));
+});
+
+app.get('/api/reports/account-statement', async (req, res) => {
+  try {
+    const { period = 'month', date, from, to, captain_id, mode, include_opening } = req.query;
+    if (!captain_id) {
+      return res.status(400).json({ error: 'الكابتن مطلوب' });
+    }
+    res.json(await finance.getCaptainAccountStatement({
+      captain_id,
+      period,
+      date,
+      from,
+      to,
+      mode: mode === 'summary' ? 'summary' : 'detailed',
+      include_opening: include_opening !== 'false',
+    }));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 app.get('/api/orders/customers', async (req, res) => {
