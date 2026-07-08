@@ -341,10 +341,11 @@ export async function updateCaptainOrderStatus(captainId, orderId, nextStatus) {
   if (!existing) throw new Error('الطلب غير موجود أو غير معيّن لك');
 
   const status = assertCaptainStatusTransition(existing.status, nextStatus);
+  const captain = await queryOne('SELECT name FROM captains WHERE id = ?', [captainId]);
   const updatedAt = isMySQL ? 'NOW()' : "datetime('now')";
   await execute(
-    `UPDATE \`orders\` SET status = ?, updated_at = ${updatedAt} WHERE id = ?`,
-    [status, orderId]
+    `UPDATE \`orders\` SET status = ?, updated_at = ${updatedAt}, updated_by_user_id = ?, updated_by_user_name = ? WHERE id = ?`,
+    [status, captainId, captain?.name || 'كابتن', orderId]
   );
 
   await touchStatusTimestamp(orderId, status, existing);
