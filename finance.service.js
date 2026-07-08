@@ -506,8 +506,7 @@ export async function postCompletedOrderFinance(order) {
   }
 
   const deliveryFee = num(order.delivery_fee);
-  const grandTotal = num(invoiceOnlyTotal + deliveryFee);
-  const creditAmount = normalizePaymentType(order.payment_type) === 'credit' ? grandTotal : 0;
+  const creditAmount = normalizePaymentType(order.payment_type) === 'credit' ? invoiceOnlyTotal : 0;
 
   const posting = await queryOne(
     'SELECT id, total_invoices, orders_count, transfers_debts FROM finance_invoice_postings WHERE captain_id = ? AND sales_date = ?',
@@ -520,7 +519,7 @@ export async function postCompletedOrderFinance(order) {
        SET total_invoices = ?, orders_count = ?, transfers_debts = ?, posted_at = ${isMySQL ? 'NOW()' : "datetime('now')"}
        WHERE id = ?`,
       [
-        num(num(posting.total_invoices) + grandTotal),
+        num(num(posting.total_invoices) + invoiceOnlyTotal),
         Number(posting.orders_count || 0) + 1,
         num(num(posting.transfers_debts) + creditAmount),
         posting.id,
@@ -529,8 +528,12 @@ export async function postCompletedOrderFinance(order) {
   } else {
     await execute(
       'INSERT INTO finance_invoice_postings (id, captain_id, total_invoices, orders_count, transfers_debts, sales_date) VALUES (?, ?, ?, ?, ?, ?)',
-      [uuid(), captainId, grandTotal, 1, creditAmount, salesDate]
+      [uuid(), captainId, invoiceOnlyTotal, 1, creditAmount, salesDate]
     );
+  }
+
+  if (deliveryFee > 0) {
+    await incrementCommissionPosting(captainId, deliveryFee, salesDate);
   }
 
   const postedAt = isMySQL ? 'NOW()' : "datetime('now')";
@@ -543,7 +546,6 @@ export async function postCompletedOrderFinance(order) {
     sales_date: salesDate,
     invoice_total: invoiceOnlyTotal,
     delivery_fee: deliveryFee,
-    grand_total: grandTotal,
     credit_amount: creditAmount,
   };
 }
@@ -590,6 +592,31 @@ export async function deleteInvoicePosting(postingId) {
   );
   await execute('DELETE FROM finance_invoice_postings WHERE id = ?', [postingId]);
   return { ok: true, captain_id: posting.captain_id, sales_date: salesDate };
+}
+
+async function incrementCommissionPosting(captainId, commissionDelta, salesDate) {
+  const delta = num(commissionDelta);
+  if (delta <= 0) return;
+
+  const sales_date = normalizeSalesDate(salesDate);
+  const existing = await queryOne(
+    'SELECT id, total_commission, rent FROM finance_commission_postings WHERE captain_id = ? AND sales_date = ?',
+    [captainId, sales_date]
+  );
+
+  if (existing) {
+    await execute(
+      `UPDATE finance_commission_postings
+       SET total_commission = ?, posted_at = ${isMySQL ? 'NOW()' : "datetime('now')"}
+       WHERE id = ?`,
+      [num(num(existing.total_commission) + delta), existing.id]
+    );
+  } else {
+    await execute(
+      'INSERT INTO finance_commission_postings (id, captain_id, total_commission, rent, sales_date) VALUES (?, ?, ?, ?, ?)',
+      [uuid(), captainId, delta, 0, sales_date]
+    );
+  }
 }
 
 async function recordCommissionPosting(captainId, totalCommission, rent, salesDate) {
@@ -1191,35 +1218,36 @@ export async function getCaptainAccountStatement({
       const orderDate = toDateKey(order.done_at || order.updated_at);
       if (!inDateRange(orderDate, range.from, range.to)) continue;
 
-      const grandTotal = num(num(order.items_total) + num(order.delivery_fee));
-      if (grandTotal <= 0) continue;
+      const invoiceTotal = num(order.items_total);
+      if (invoiceTotal <= 0) continue;
 
       const paymentType = normalizePaymentType(order.payment_type);
       const orderRef = String(order.id || '').slice(-6).toUpperCase();
-      const sortBase = `${orderDate}T12:00:00.000|10|${orderRef}`;
 
-      events.push({
-        sort_key: sortBase,
-        journal_date: orderDate,
-        reference_type: 'order',
-        reference_id: orderRef,
-        account_name: captain.name,
-        debit: grandTotal,
-        credit: 0,
-        notes: `طلب #${orderRef} — ${order.customer_name || ''} — ${PAYMENT_LABELS[paymentType] || paymentType}`,
-      });
-
-      if (paymentType === 'credit') {
+      if (invoiceTotal > 0) {
         events.push({
-          sort_key: `${orderDate}T12:00:01.000|11|${orderRef}`,
+          sort_key: `${orderDate}T12:00:00.000|10|${orderRef}`,
           journal_date: orderDate,
-          reference_type: 'credit',
+          reference_type: 'order',
           reference_id: orderRef,
           account_name: captain.name,
-          debit: 0,
-          credit: grandTotal,
-          notes: `آجل طلب #${orderRef}`,
+          debit: invoiceTotal,
+          credit: 0,
+          notes: `فاتورة طلب #${orderRef} — ${order.customer_name || ''} — ${PAYMENT_LABELS[paymentType] || paymentType}`,
         });
+
+        if (paymentType === 'credit') {
+          events.push({
+            sort_key: `${orderDate}T12:00:01.000|11|${orderRef}`,
+            journal_date: orderDate,
+            reference_type: 'credit',
+            reference_id: orderRef,
+            account_name: captain.name,
+            debit: 0,
+            credit: invoiceTotal,
+            notes: `آجل فاتورة طلب #${orderRef}`,
+          });
+        }
       }
     }
   } else {
@@ -1280,16 +1308,45 @@ export async function getCaptainAccountStatement({
     if (totalCommission <= 0 && rent <= 0) continue;
 
     const companyCommission = num(totalCommission * companyRate / 100);
-    events.push({
-      sort_key: `${salesDate}T09:00:00.000|20|commission`,
-      journal_date: salesDate,
-      reference_type: 'commission',
-      reference_id: '',
-      account_name: captain.name,
-      debit: num(companyCommission + rent),
-      credit: totalCommission,
-      notes: `عمولة يوم ${salesDate}${rent > 0 ? ` — إيجار ${rent}` : ''}`,
-    });
+
+    if (totalCommission > 0) {
+      events.push({
+        sort_key: `${salesDate}T09:00:00.000|20|commission`,
+        journal_date: salesDate,
+        reference_type: 'commission',
+        reference_id: '',
+        account_name: captain.name,
+        debit: 0,
+        credit: totalCommission,
+        notes: `عمولة توصيل يوم ${salesDate}`,
+      });
+    }
+
+    if (companyCommission > 0) {
+      events.push({
+        sort_key: `${salesDate}T09:00:01.000|21|company`,
+        journal_date: salesDate,
+        reference_type: 'company_commission',
+        reference_id: '',
+        account_name: captain.name,
+        debit: companyCommission,
+        credit: 0,
+        notes: `عمولة الشركة (${companyRate}%)`,
+      });
+    }
+
+    if (rent > 0) {
+      events.push({
+        sort_key: `${salesDate}T09:00:02.000|22|rent`,
+        journal_date: salesDate,
+        reference_type: 'rent',
+        reference_id: '',
+        account_name: captain.name,
+        debit: rent,
+        credit: 0,
+        notes: `إيجار يوم ${salesDate}`,
+      });
+    }
   }
 
   const periodVouchers = allVouchers.filter(v => voucherInDateRange(v, range.from, range.to));
