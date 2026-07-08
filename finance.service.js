@@ -1304,13 +1304,13 @@ export async function getCaptainAccountStatement({
     let notes = voucher.note || '';
 
     if (isTransfer) {
-      referenceType = isReceipt ? 'transfer_out' : 'transfer_in';
+      referenceType = isReceipt ? 'transfer_in' : 'transfer_out';
       const counterpart = voucher.counterpart_name
         ? `${voucher.counterpart_name}${voucher.counterpart_number ? ` (${voucher.counterpart_number})` : ''}`
         : '';
       notes = notes || (isReceipt
-        ? `تحويل إلى ${counterpart || 'كابتن'}`
-        : `تحويل من ${counterpart || 'كابتن'}`);
+        ? `تحويل من ${counterpart || 'كابتن'}`
+        : `تحويل إلى ${counterpart || 'كابتن'}`);
     } else {
       notes = notes || (isReceipt ? 'سند قبض' : 'سند صرف');
     }
@@ -1321,8 +1321,8 @@ export async function getCaptainAccountStatement({
       reference_type: referenceType,
       reference_id: voucher.id?.slice(0, 8) || '',
       account_name: captain.name,
-      debit: isReceipt ? amount : 0,
-      credit: isReceipt ? 0 : amount,
+      debit: isReceipt ? 0 : amount,
+      credit: isReceipt ? amount : 0,
       notes,
     });
   }
