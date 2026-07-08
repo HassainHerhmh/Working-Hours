@@ -553,6 +553,46 @@ export async function migrateOrdersPaymentTypeColumn() {
   }
 }
 
+export async function migrateOrdersStatusTimestamps() {
+  const columns = [
+    { name: 'assigned_at', mysql: 'TIMESTAMP NULL', sqlite: 'TEXT' },
+    { name: 'in_progress_at', mysql: 'TIMESTAMP NULL', sqlite: 'TEXT' },
+    { name: 'on_delivery_at', mysql: 'TIMESTAMP NULL', sqlite: 'TEXT' },
+    { name: 'done_at', mysql: 'TIMESTAMP NULL', sqlite: 'TEXT' },
+    { name: 'cancelled_at', mysql: 'TIMESTAMP NULL', sqlite: 'TEXT' },
+  ];
+
+  if (isMySQL) {
+    for (const col of columns) {
+      const exists = await queryAll(`SHOW COLUMNS FROM orders LIKE '${col.name}'`);
+      if (!exists.length) {
+        await execute(`ALTER TABLE orders ADD COLUMN ${col.name} ${col.mysql}`);
+      }
+    }
+  } else {
+    const cols = sqlite.prepare('PRAGMA table_info(orders)').all();
+    for (const col of columns) {
+      if (!cols.some(c => c.name === col.name)) {
+        sqlite.exec(`ALTER TABLE orders ADD COLUMN ${col.name} ${col.sqlite}`);
+      }
+    }
+  }
+}
+
+export async function migrateOrderItemsInvoiceAmount() {
+  if (isMySQL) {
+    const cols = await queryAll("SHOW COLUMNS FROM order_items LIKE 'invoice_amount'");
+    if (!cols.length) {
+      await execute('ALTER TABLE order_items ADD COLUMN invoice_amount DECIMAL(12,2) NOT NULL DEFAULT 0');
+    }
+  } else {
+    const cols = sqlite.prepare('PRAGMA table_info(order_items)').all();
+    if (!cols.some(c => c.name === 'invoice_amount')) {
+      sqlite.exec('ALTER TABLE order_items ADD COLUMN invoice_amount REAL NOT NULL DEFAULT 0');
+    }
+  }
+}
+
 export async function migrateFinanceVouchersTable() {
   if (isMySQL) {
     await execute(`

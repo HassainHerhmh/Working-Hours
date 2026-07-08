@@ -15,7 +15,7 @@ const PAYMENT_TYPES = ['cash', 'transfer', 'credit'];
 const CAPTAIN_STATUS_FLOW = {
   new: 'in_progress',
   assigned: 'in_progress',
-  in_progress: 'on_delivery',
+  in_progress: ['on_delivery', 'cancelled'],
   on_delivery: ['done', 'cancelled'],
 };
 
@@ -27,6 +27,21 @@ function normalizeStatus(v) {
 function normalizePaymentType(v) {
   const payment = str(v).toLowerCase();
   return PAYMENT_TYPES.includes(payment) ? payment : 'cash';
+}
+
+const STATUS_TIMESTAMP_COL = {
+  assigned: 'assigned_at',
+  in_progress: 'in_progress_at',
+  on_delivery: 'on_delivery_at',
+  done: 'done_at',
+  cancelled: 'cancelled_at',
+};
+
+async function touchStatusTimestamp(orderId, status, existing = {}) {
+  const col = STATUS_TIMESTAMP_COL[normalizeStatus(status)];
+  if (!col || existing[col]) return;
+  const updatedAt = isMySQL ? 'NOW()' : "datetime('now')";
+  await execute(`UPDATE \`orders\` SET ${col} = ${updatedAt} WHERE id = ?`, [orderId]);
 }
 
 async function upsertCustomer(payload) {
@@ -89,10 +104,21 @@ async function attachItems(orders) {
       store_id: row.store_id,
       store_name: row.finance_store_name || row.store_name || 'بدون محل',
       details: row.details || '',
+      invoice_amount: num(row.invoice_amount),
     });
     map.set(row.order_id, current);
   }
-  return orders.map(order => ({ ...order, items: map.get(order.id) || [] }));
+  return orders.map((order) => {
+    const items = map.get(order.id) || [];
+    const invoice_total = items.reduce((sum, item) => sum + num(item.invoice_amount), 0);
+    const delivery_fee = num(order.delivery_fee);
+    return {
+      ...order,
+      items,
+      invoice_total,
+      grand_total: num(invoice_total + delivery_fee),
+    };
+  });
 }
 
 function withDisplayNumbers(orders) {
@@ -196,6 +222,8 @@ export async function createOrder(payload) {
     ]
   );
 
+  await touchStatusTimestamp(orderId, normalizeStatus(payload.status || 'new'), {});
+
   for (const item of validItems) {
     let storeName = 'بدون محل';
     if (item.store_id) {
@@ -229,6 +257,7 @@ export async function updateOrder(orderId, payload) {
   const updatedAt = isMySQL ? 'NOW()' : "datetime('now')";
   const { userId, userName: rawUserName } = orderUserFields(payload);
   const nextUserName = rawUserName || existing.updated_by_user_name || existing.created_by_user_name || '';
+  const nextStatus = payload.status ? normalizeStatus(payload.status) : normalizeStatus(existing.status);
   await execute(
     `UPDATE \`orders\`
      SET customer_id = ?, customer_name = ?, customer_phone = ?, address_text = ?, map_link = ?,
@@ -243,13 +272,17 @@ export async function updateOrder(orderId, payload) {
       str(payload.map_link) || customer.map_link || '',
       payload.delivery_fee !== undefined ? num(payload.delivery_fee) : num(existing.delivery_fee),
       payload.captain_id !== undefined ? (payload.captain_id || null) : existing.captain_id,
-      payload.status ? normalizeStatus(payload.status) : normalizeStatus(existing.status),
+      nextStatus,
       payload.payment_type !== undefined ? normalizePaymentType(payload.payment_type) : normalizePaymentType(existing.payment_type),
       userId || existing.updated_by_user_id || existing.created_by_user_id || null,
       nextUserName,
       orderId,
     ]
   );
+
+  if (nextStatus !== normalizeStatus(existing.status)) {
+    await touchStatusTimestamp(orderId, nextStatus, existing);
+  }
 
   if (detailsRows) {
     const validItems = detailsRows
@@ -302,6 +335,32 @@ export async function updateCaptainOrderStatus(captainId, orderId, nextStatus) {
     `UPDATE \`orders\` SET status = ?, updated_at = ${updatedAt} WHERE id = ?`,
     [status, orderId]
   );
+
+  await touchStatusTimestamp(orderId, status, existing);
+
+  const order = await queryOne('SELECT * FROM `orders` WHERE id = ?', [orderId]);
+  const [enriched] = await attachItems([order]);
+  return enriched;
+}
+
+export async function updateCaptainOrderItems(captainId, orderId, items) {
+  const existing = await queryOne('SELECT * FROM `orders` WHERE id = ? AND captain_id = ?', [orderId, captainId]);
+  if (!existing) throw new Error('الطلب غير موجود أو غير معيّن لك');
+
+  const status = normalizeStatus(existing.status);
+  if (!['assigned', 'in_progress', 'on_delivery'].includes(status)) {
+    throw new Error('لا يمكن تعديل الفاتورة في هذه الحالة');
+  }
+
+  const rows = Array.isArray(items) ? items : [];
+  for (const row of rows) {
+    const itemId = str(row.id);
+    if (!itemId) continue;
+    await execute(
+      'UPDATE order_items SET invoice_amount = ? WHERE id = ? AND order_id = ?',
+      [num(row.invoice_amount), itemId, orderId]
+    );
+  }
 
   const order = await queryOne('SELECT * FROM `orders` WHERE id = ?', [orderId]);
   const [enriched] = await attachItems([order]);

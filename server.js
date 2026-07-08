@@ -6,7 +6,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
-import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn, migrateShiftPeriodColumns, migrateShiftReminderTable, migrateAttendanceTable, migrateFinanceTables, migrateOrdersTables, migrateOrdersUserColumns, migrateOrdersPaymentTypeColumn, migrateFinanceVouchersTable, migrateFinanceInvoicePostingsTable, migrateFinanceInvoiceOrdersCountColumn, migrateFinanceInvoiceSalesDateColumn, migrateFinanceInvoicePerDate, migrateFinanceCommissionPostingsTable, migrateFinanceCommissionSalesDateColumn, migrateFinanceCommissionPerDate, migrateFinanceVoucherDateColumn, migrateFinanceVoucherTransferColumns, migrateFixTransferVoucherTypes, toDbDateTime } from './database.js';
+import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn, migrateShiftPeriodColumns, migrateShiftReminderTable, migrateAttendanceTable, migrateFinanceTables, migrateOrdersTables, migrateOrdersUserColumns, migrateOrdersPaymentTypeColumn, migrateOrdersStatusTimestamps, migrateOrderItemsInvoiceAmount, migrateFinanceVouchersTable, migrateFinanceInvoicePostingsTable, migrateFinanceInvoiceOrdersCountColumn, migrateFinanceInvoiceSalesDateColumn, migrateFinanceInvoicePerDate, migrateFinanceCommissionPostingsTable, migrateFinanceCommissionSalesDateColumn, migrateFinanceCommissionPerDate, migrateFinanceVoucherDateColumn, migrateFinanceVoucherTransferColumns, migrateFixTransferVoucherTypes, toDbDateTime } from './database.js';
 import * as smsGw from './smsGateway.service.js';
 import * as shiftReminder from './shiftReminder.service.js';
 import * as attendance from './attendance.service.js';
@@ -122,6 +122,8 @@ async function seedIfEmpty() {
   await migrateOrdersTables();
   await migrateOrdersUserColumns();
   await migrateOrdersPaymentTypeColumn();
+  await migrateOrdersStatusTimestamps();
+  await migrateOrderItemsInvoiceAmount();
   await migrateFinanceVouchersTable();
   await migrateFinanceInvoicePostingsTable();
   await migrateFinanceInvoiceOrdersCountColumn();
@@ -812,6 +814,19 @@ app.put('/api/captain/orders/:captainId/:orderId/status', async (req, res) => {
       req.params.captainId,
       req.params.orderId,
       req.body?.status
+    );
+    res.json(order);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.put('/api/captain/orders/:captainId/:orderId/items', async (req, res) => {
+  try {
+    const order = await orders.updateCaptainOrderItems(
+      req.params.captainId,
+      req.params.orderId,
+      req.body?.items || []
     );
     res.json(order);
   } catch (err) {
