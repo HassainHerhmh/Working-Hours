@@ -586,12 +586,33 @@ export async function deleteInvoicePosting(postingId) {
   if (!posting) throw new Error('سجل الترحيل غير موجود');
 
   const salesDate = posting.sales_date || toDateKey(posting.posted_at);
+  const captainId = posting.captain_id;
+
+  const orders = await queryAll(
+    `SELECT id, delivery_fee, done_at, updated_at
+     FROM \`orders\`
+     WHERE captain_id = ? AND status = 'done' AND finance_posted_at IS NOT NULL`,
+    [captainId]
+  );
+
+  let deliveryReversal = 0;
+  for (const order of orders) {
+    const orderDate = toDateKey(order.done_at || order.updated_at);
+    if (orderDate !== salesDate) continue;
+    deliveryReversal = num(deliveryReversal + num(order.delivery_fee));
+    await execute('UPDATE `orders` SET finance_posted_at = NULL WHERE id = ?', [order.id]);
+  }
+
+  if (deliveryReversal > 0) {
+    await decrementCommissionPosting(captainId, deliveryReversal, salesDate);
+  }
+
   await execute(
     'DELETE FROM captain_store_invoices WHERE captain_id = ? AND sales_date = ?',
-    [posting.captain_id, salesDate]
+    [captainId, salesDate]
   );
   await execute('DELETE FROM finance_invoice_postings WHERE id = ?', [postingId]);
-  return { ok: true, captain_id: posting.captain_id, sales_date: salesDate };
+  return { ok: true, captain_id: captainId, sales_date: salesDate };
 }
 
 async function incrementCommissionPosting(captainId, commissionDelta, salesDate) {
@@ -615,6 +636,30 @@ async function incrementCommissionPosting(captainId, commissionDelta, salesDate)
     await execute(
       'INSERT INTO finance_commission_postings (id, captain_id, total_commission, rent, sales_date) VALUES (?, ?, ?, ?, ?)',
       [uuid(), captainId, delta, 0, sales_date]
+    );
+  }
+}
+
+async function decrementCommissionPosting(captainId, commissionDelta, salesDate) {
+  const delta = num(commissionDelta);
+  if (delta <= 0) return;
+
+  const sales_date = normalizeSalesDate(salesDate);
+  const existing = await queryOne(
+    'SELECT id, total_commission, rent FROM finance_commission_postings WHERE captain_id = ? AND sales_date = ?',
+    [captainId, sales_date]
+  );
+  if (!existing) return;
+
+  const nextTotal = num(num(existing.total_commission) - delta);
+  if (nextTotal <= 0 && num(existing.rent) <= 0) {
+    await execute('DELETE FROM finance_commission_postings WHERE id = ?', [existing.id]);
+  } else {
+    await execute(
+      `UPDATE finance_commission_postings
+       SET total_commission = ?, posted_at = ${isMySQL ? 'NOW()' : "datetime('now')"}
+       WHERE id = ?`,
+      [Math.max(0, nextTotal), existing.id]
     );
   }
 }
@@ -1151,6 +1196,13 @@ function buildStatementRow(row) {
   };
 }
 
+async function buildOrderDisplayNumberMap() {
+  const rows = await queryAll('SELECT id FROM `orders` ORDER BY created_at DESC');
+  const map = new Map();
+  rows.forEach((row, index) => map.set(row.id, index + 1));
+  return map;
+}
+
 export async function getCaptainAccountStatement({
   captain_id,
   period = 'month',
@@ -1183,6 +1235,14 @@ export async function getCaptainAccountStatement({
 
   const events = [];
   let openingBalance = 0;
+  const orderDisplayMap = await buildOrderDisplayNumberMap();
+  const activeInvoiceDates = new Set(
+    (await queryAll(
+      'SELECT sales_date, posted_at FROM finance_invoice_postings WHERE captain_id = ?',
+      [captain_id]
+    )).map((row) => row.sales_date || toDateKey(row.posted_at))
+  );
+  const deliveryByDate = new Map();
 
   if (include_opening) {
     const prev = await buildPreviousBalance(captain_id, range, config, allVouchers);
@@ -1209,7 +1269,7 @@ export async function getCaptainAccountStatement({
       `SELECT o.*,
         (SELECT COALESCE(SUM(invoice_amount), 0) FROM order_items WHERE order_id = o.id) AS items_total
        FROM \`orders\` o
-       WHERE o.captain_id = ? AND o.status = 'done'
+       WHERE o.captain_id = ? AND o.status = 'done' AND o.finance_posted_at IS NOT NULL
        ORDER BY COALESCE(o.done_at, o.updated_at) ASC`,
       [captain_id]
     );
@@ -1217,12 +1277,12 @@ export async function getCaptainAccountStatement({
     for (const order of orders) {
       const orderDate = toDateKey(order.done_at || order.updated_at);
       if (!inDateRange(orderDate, range.from, range.to)) continue;
+      if (!activeInvoiceDates.has(orderDate)) continue;
 
+      const orderRef = String(orderDisplayMap.get(order.id) || '');
       const invoiceTotal = num(order.items_total);
-      if (invoiceTotal <= 0) continue;
-
+      const deliveryFee = num(order.delivery_fee);
       const paymentType = normalizePaymentType(order.payment_type);
-      const orderRef = String(order.id || '').slice(-6).toUpperCase();
 
       if (invoiceTotal > 0) {
         events.push({
@@ -1246,6 +1306,23 @@ export async function getCaptainAccountStatement({
             debit: 0,
             credit: invoiceTotal,
             notes: `آجل فاتورة طلب #${orderRef}`,
+          });
+        }
+      }
+
+      if (deliveryFee > 0) {
+        deliveryByDate.set(orderDate, num((deliveryByDate.get(orderDate) || 0) + deliveryFee));
+        const companyShare = num(deliveryFee * companyRate / 100);
+        if (companyShare > 0) {
+          events.push({
+            sort_key: `${orderDate}T12:00:02.000|12|${orderRef}`,
+            journal_date: orderDate,
+            reference_type: 'company_commission',
+            reference_id: orderRef,
+            account_name: captain.name,
+            debit: companyShare,
+            credit: 0,
+            notes: `عمولة طلب #${orderRef}`,
           });
         }
       }
@@ -1307,20 +1384,11 @@ export async function getCaptainAccountStatement({
     const rent = num(posting.rent);
     if (totalCommission <= 0 && rent <= 0) continue;
 
-    const companyCommission = num(totalCommission * companyRate / 100);
-
-    if (totalCommission > 0) {
-      events.push({
-        sort_key: `${salesDate}T09:00:00.000|20|commission`,
-        journal_date: salesDate,
-        reference_type: 'commission',
-        reference_id: '',
-        account_name: captain.name,
-        debit: 0,
-        credit: totalCommission,
-        notes: `عمولة توصيل يوم ${salesDate}`,
-      });
-    }
+    const postedDelivery = mode === 'detailed' ? num(deliveryByDate.get(salesDate) || 0) : 0;
+    const manualCommission = mode === 'detailed'
+      ? Math.max(0, num(totalCommission - postedDelivery))
+      : totalCommission;
+    const companyCommission = num(manualCommission * companyRate / 100);
 
     if (companyCommission > 0) {
       events.push({
@@ -1331,7 +1399,9 @@ export async function getCaptainAccountStatement({
         account_name: captain.name,
         debit: companyCommission,
         credit: 0,
-        notes: `عمولة الشركة (${companyRate}%)`,
+        notes: mode === 'detailed'
+          ? `عمولة يدوية يوم ${salesDate} (${companyRate}%)`
+          : `عمولة الشركة (${companyRate}%) — يوم ${salesDate}`,
       });
     }
 
