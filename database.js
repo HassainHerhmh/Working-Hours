@@ -254,6 +254,20 @@ export async function execute(sql, params = []) {
   return sqlite.prepare(sql).run(...params);
 }
 
+export async function migrateUsersPermissionsColumn() {
+  if (isMySQL) {
+    const cols = await queryAll("SHOW COLUMNS FROM users LIKE 'permissions'");
+    if (!cols.length) {
+      await execute('ALTER TABLE users ADD COLUMN permissions JSON NULL');
+    }
+  } else {
+    const cols = sqlite.prepare('PRAGMA table_info(users)').all();
+    if (!cols.some(c => c.name === 'permissions')) {
+      sqlite.exec('ALTER TABLE users ADD COLUMN permissions TEXT');
+    }
+  }
+}
+
 export async function migrateCaptainPasswordColumn() {
   if (isMySQL) return;
   const cols = sqlite.prepare('PRAGMA table_info(captains)').all();

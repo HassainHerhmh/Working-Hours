@@ -356,7 +356,9 @@ export async function getCaptainFinance(captainId, { period, date, sales_date } 
       [captainId, normalizedSalesDate]
     );
     invoices = await getCaptainInvoices(captainId, normalizedSalesDate);
-    transfers_debts = posting ? num(posting.transfers_debts) : 0;
+    transfers_debts = posting
+      ? await syncPostingTransfersDebts(captainId, normalizedSalesDate)
+      : await computeTransfersDebtsFromOrders(captainId, normalizedSalesDate);
     orders_count = posting ? Number(posting.orders_count || 0) : 0;
     total_invoices = posting
       ? num(posting.total_invoices)
@@ -469,6 +471,52 @@ function normalizePaymentType(value) {
   return ['cash', 'transfer', 'credit'].includes(key) ? key : 'cash';
 }
 
+function isNonCashPaymentType(paymentType) {
+  const key = normalizePaymentType(paymentType);
+  return key === 'transfer' || key === 'credit';
+}
+
+function orderTransfersDebtsAmount(order, invoiceTotal = null) {
+  if (!isNonCashPaymentType(order?.payment_type)) return 0;
+  const invoice = invoiceTotal !== null ? num(invoiceTotal) : num(order?.items_total);
+  return num(invoice + num(order?.delivery_fee));
+}
+
+async function computeTransfersDebtsFromOrders(captainId, salesDate) {
+  const orders = await queryAll(
+    `SELECT o.payment_type, o.delivery_fee, o.done_at, o.updated_at,
+      (SELECT COALESCE(SUM(invoice_amount), 0) FROM order_items WHERE order_id = o.id) AS items_total
+     FROM \`orders\` o
+     WHERE o.captain_id = ? AND o.status = 'done' AND o.finance_posted_at IS NOT NULL`,
+    [captainId]
+  );
+
+  let total = 0;
+  for (const order of orders) {
+    const orderDate = toDateKey(order.done_at || order.updated_at);
+    if (orderDate !== salesDate) continue;
+    total += orderTransfersDebtsAmount(order);
+  }
+  return num(total);
+}
+
+async function syncPostingTransfersDebts(captainId, salesDate) {
+  const posting = await queryOne(
+    'SELECT id, transfers_debts FROM finance_invoice_postings WHERE captain_id = ? AND sales_date = ?',
+    [captainId, salesDate]
+  );
+  if (!posting) return 0;
+
+  const computed = await computeTransfersDebtsFromOrders(captainId, salesDate);
+  if (computed !== num(posting.transfers_debts)) {
+    await execute(
+      'UPDATE finance_invoice_postings SET transfers_debts = ? WHERE id = ?',
+      [computed, posting.id]
+    );
+  }
+  return computed;
+}
+
 export async function postCompletedOrderFinance(order) {
   if (!order?.captain_id) throw new Error('الكابتن غير موجود للطلب');
   if (order.finance_posted_at) {
@@ -506,7 +554,10 @@ export async function postCompletedOrderFinance(order) {
   }
 
   const deliveryFee = num(order.delivery_fee);
-  const creditAmount = normalizePaymentType(order.payment_type) === 'credit' ? invoiceOnlyTotal : 0;
+  const paymentType = normalizePaymentType(order.payment_type);
+  const transfersDebtsAmount = isNonCashPaymentType(paymentType)
+    ? num(invoiceOnlyTotal + deliveryFee)
+    : 0;
 
   const posting = await queryOne(
     'SELECT id, total_invoices, orders_count, transfers_debts FROM finance_invoice_postings WHERE captain_id = ? AND sales_date = ?',
@@ -521,14 +572,14 @@ export async function postCompletedOrderFinance(order) {
       [
         num(num(posting.total_invoices) + invoiceOnlyTotal),
         Number(posting.orders_count || 0) + 1,
-        num(num(posting.transfers_debts) + creditAmount),
+        num(num(posting.transfers_debts) + transfersDebtsAmount),
         posting.id,
       ]
     );
   } else {
     await execute(
       'INSERT INTO finance_invoice_postings (id, captain_id, total_invoices, orders_count, transfers_debts, sales_date) VALUES (?, ?, ?, ?, ?, ?)',
-      [uuid(), captainId, invoiceOnlyTotal, 1, creditAmount, salesDate]
+      [uuid(), captainId, invoiceOnlyTotal, 1, transfersDebtsAmount, salesDate]
     );
   }
 
@@ -546,7 +597,7 @@ export async function postCompletedOrderFinance(order) {
     sales_date: salesDate,
     invoice_total: invoiceOnlyTotal,
     delivery_fee: deliveryFee,
-    credit_amount: creditAmount,
+    transfers_debts_amount: transfersDebtsAmount,
   };
 }
 
@@ -1296,17 +1347,22 @@ export async function getCaptainAccountStatement({
           notes: `فاتورة طلب #${orderRef} — ${order.customer_name || ''} — ${PAYMENT_LABELS[paymentType] || paymentType}`,
         });
 
-        if (paymentType === 'credit') {
-          events.push({
-            sort_key: `${orderDate}T12:00:01.000|11|${orderRef}`,
-            journal_date: orderDate,
-            reference_type: 'credit',
-            reference_id: orderRef,
-            account_name: captain.name,
-            debit: 0,
-            credit: invoiceTotal,
-            notes: `آجل فاتورة طلب #${orderRef}`,
-          });
+        if (isNonCashPaymentType(paymentType)) {
+          const orderTotal = num(invoiceTotal + deliveryFee);
+          if (orderTotal > 0) {
+            events.push({
+              sort_key: `${orderDate}T12:00:01.000|11|${orderRef}`,
+              journal_date: orderDate,
+              reference_type: paymentType === 'transfer' ? 'transfer' : 'credit',
+              reference_id: orderRef,
+              account_name: captain.name,
+              debit: 0,
+              credit: orderTotal,
+              notes: paymentType === 'transfer'
+                ? `حوالة طلب #${orderRef} — ${order.customer_name || ''}`
+                : `آجل طلب #${orderRef} — ${order.customer_name || ''}`,
+            });
+          }
         }
       }
 
@@ -1328,6 +1384,23 @@ export async function getCaptainAccountStatement({
       }
     }
   } else {
+    const transfersDebtsByDate = new Map();
+    const ordersForTransfers = await queryAll(
+      `SELECT o.payment_type, o.delivery_fee, o.done_at, o.updated_at,
+        (SELECT COALESCE(SUM(invoice_amount), 0) FROM order_items WHERE order_id = o.id) AS items_total
+       FROM \`orders\` o
+       WHERE o.captain_id = ? AND o.status = 'done' AND o.finance_posted_at IS NOT NULL`,
+      [captain_id]
+    );
+    for (const order of ordersForTransfers) {
+      const orderDate = toDateKey(order.done_at || order.updated_at);
+      if (!inDateRange(orderDate, range.from, range.to)) continue;
+      const amt = orderTransfersDebtsAmount(order);
+      if (amt > 0) {
+        transfersDebtsByDate.set(orderDate, num((transfersDebtsByDate.get(orderDate) || 0) + amt));
+      }
+    }
+
     const postings = await queryAll(
       `SELECT * FROM finance_invoice_postings
        WHERE captain_id = ? AND sales_date >= ? AND sales_date <= ?
@@ -1338,7 +1411,7 @@ export async function getCaptainAccountStatement({
     for (const posting of postings) {
       const salesDate = posting.sales_date || toDateKey(posting.posted_at);
       const totalInvoices = num(posting.total_invoices);
-      const transfersDebts = num(posting.transfers_debts);
+      const transfersDebts = transfersDebtsByDate.get(salesDate) ?? num(posting.transfers_debts);
       const ordersCount = Number(posting.orders_count || 0);
 
       if (totalInvoices > 0) {
@@ -1365,7 +1438,7 @@ export async function getCaptainAccountStatement({
           account_name: captain.name,
           debit: 0,
           credit: transfersDebts,
-          notes: `آجل يوم ${salesDate}`,
+          notes: `حوالات + آجل يوم ${salesDate}`,
         });
       }
     }

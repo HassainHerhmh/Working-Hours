@@ -6,7 +6,8 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
-import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn, migrateShiftPeriodColumns, migrateShiftReminderTable, migrateAttendanceTable, migrateFinanceTables, migrateOrdersTables, migrateOrdersUserColumns, migrateOrdersPaymentTypeColumn, migrateOrdersStatusTimestamps, migrateOrdersFinancePostedColumn, migrateOrderItemsInvoiceAmount, migrateFinanceVouchersTable, migrateFinanceInvoicePostingsTable, migrateFinanceInvoiceOrdersCountColumn, migrateFinanceInvoiceSalesDateColumn, migrateFinanceInvoicePerDate, migrateFinanceCommissionPostingsTable, migrateFinanceCommissionSalesDateColumn, migrateFinanceCommissionPerDate, migrateFinanceVoucherDateColumn, migrateFinanceVoucherTransferColumns, migrateFixTransferVoucherTypes, toDbDateTime } from './database.js';
+import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn, migrateShiftPeriodColumns, migrateShiftReminderTable, migrateAttendanceTable, migrateFinanceTables, migrateOrdersTables, migrateOrdersUserColumns, migrateOrdersPaymentTypeColumn, migrateOrdersStatusTimestamps, migrateOrdersFinancePostedColumn, migrateOrderItemsInvoiceAmount, migrateFinanceVouchersTable, migrateFinanceInvoicePostingsTable, migrateFinanceInvoiceOrdersCountColumn, migrateFinanceInvoiceSalesDateColumn, migrateFinanceInvoicePerDate, migrateFinanceCommissionPostingsTable, migrateFinanceCommissionSalesDateColumn, migrateFinanceCommissionPerDate, migrateFinanceVoucherDateColumn, migrateFinanceVoucherTransferColumns, migrateFixTransferVoucherTypes, migrateUsersPermissionsColumn, toDbDateTime } from './database.js';
+import { getUserPermissions, saveUserPermissions, resolveUserPermissions, createFullPermissions } from './permissions.js';
 import * as smsGw from './smsGateway.service.js';
 import * as shiftReminder from './shiftReminder.service.js';
 import * as attendance from './attendance.service.js';
@@ -99,8 +100,12 @@ function sanitizeCaptain(captain) {
 }
 
 function sanitizeUser(user) {
+  if (!user) return null;
   const { password_hash, ...safe } = user;
-  return safe;
+  return {
+    ...safe,
+    permissions: resolveUserPermissions(safe),
+  };
 }
 
 async function ensureCaptainPasswords() {
@@ -136,6 +141,7 @@ async function seedIfEmpty() {
   await migrateFinanceVoucherDateColumn();
   await migrateFinanceVoucherTransferColumns();
   await migrateFixTransferVoucherTypes();
+  await migrateUsersPermissionsColumn();
   const captainCount = Number((await queryOne('SELECT COUNT(*) as c FROM captains')).c);
   if (captainCount === 0) {
     const captains = [
@@ -164,9 +170,9 @@ async function seedIfEmpty() {
   if (userCount === 0) {
     const hash = bcrypt.hashSync('admin123', 10);
     await execute(`
-      INSERT INTO users (id, name, email, phone, role, status, password_hash)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `, [uuid(), 'المدير', 'admin@ebham.com', '967770000000', 'admin', 'active', hash]);
+      INSERT INTO users (id, name, email, phone, role, status, password_hash, permissions)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `, [uuid(), 'المدير', 'admin@ebham.com', '967770000000', 'admin', 'active', hash, JSON.stringify(createFullPermissions())]);
   }
   await ensureCaptainPasswords();
 }
@@ -254,6 +260,23 @@ app.patch('/api/users/:id/reset-password', async (req, res) => {
 app.delete('/api/users/:id', async (req, res) => {
   await execute('DELETE FROM users WHERE id = ?', [req.params.id]);
   res.json({ ok: true });
+});
+
+app.get('/api/users/:id/permissions', async (req, res) => {
+  try {
+    res.json({ success: true, ...(await getUserPermissions(req.params.id, queryOne)) });
+  } catch (err) {
+    res.status(404).json({ error: err.message });
+  }
+});
+
+app.put('/api/users/:id/permissions', async (req, res) => {
+  try {
+    const result = await saveUserPermissions(req.params.id, req.body || {}, { queryOne, execute });
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 // ─── Captains ───────────────────────────────────────────────
