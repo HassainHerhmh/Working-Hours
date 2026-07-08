@@ -539,6 +539,20 @@ export async function migrateOrdersUserColumns() {
   }
 }
 
+export async function migrateOrdersPaymentTypeColumn() {
+  if (isMySQL) {
+    const cols = await queryAll("SHOW COLUMNS FROM orders LIKE 'payment_type'");
+    if (!cols.length) {
+      await execute("ALTER TABLE orders ADD COLUMN payment_type VARCHAR(20) NOT NULL DEFAULT 'cash'");
+    }
+  } else {
+    const cols = sqlite.prepare('PRAGMA table_info(orders)').all();
+    if (!cols.some(c => c.name === 'payment_type')) {
+      sqlite.exec("ALTER TABLE orders ADD COLUMN payment_type TEXT NOT NULL DEFAULT 'cash'");
+    }
+  }
+}
+
 export async function migrateFinanceVouchersTable() {
   if (isMySQL) {
     await execute(`

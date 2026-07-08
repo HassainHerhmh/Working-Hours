@@ -9,9 +9,24 @@ function str(v) {
   return String(v || '').trim();
 }
 
+const ORDER_STATUSES = ['new', 'assigned', 'in_progress', 'on_delivery', 'done', 'cancelled'];
+const PAYMENT_TYPES = ['cash', 'transfer', 'credit'];
+
+const CAPTAIN_STATUS_FLOW = {
+  new: 'in_progress',
+  assigned: 'in_progress',
+  in_progress: 'on_delivery',
+  on_delivery: ['done', 'cancelled'],
+};
+
 function normalizeStatus(v) {
   const status = str(v).toLowerCase();
-  return ['new', 'assigned', 'in_progress', 'done', 'cancelled'].includes(status) ? status : 'new';
+  return ORDER_STATUSES.includes(status) ? status : 'new';
+}
+
+function normalizePaymentType(v) {
+  const payment = str(v).toLowerCase();
+  return PAYMENT_TYPES.includes(payment) ? payment : 'cash';
 }
 
 async function upsertCustomer(payload) {
@@ -80,6 +95,10 @@ async function attachItems(orders) {
   return orders.map(order => ({ ...order, items: map.get(order.id) || [] }));
 }
 
+function withDisplayNumbers(orders) {
+  return orders.map((order, index) => ({ ...order, display_number: index + 1 }));
+}
+
 export async function listCustomers(queryText = '') {
   const q = `%${str(queryText)}%`;
   const rows = await queryAll(
@@ -111,6 +130,26 @@ export async function listOrders({ status } = {}) {
   return attachItems(rows);
 }
 
+export async function listCaptainOrders(captainId, { status } = {}) {
+  const params = [captainId];
+  let where = 'WHERE o.captain_id = ?';
+  if (status) {
+    where += ' AND o.status = ?';
+    params.push(normalizeStatus(status));
+  } else {
+    where += " AND o.status NOT IN ('done', 'cancelled')";
+  }
+  const rows = await queryAll(
+    `SELECT o.*
+     FROM \`orders\` o
+     ${where}
+     ORDER BY o.created_at DESC`,
+    params
+  );
+  const withItems = await attachItems(rows);
+  return withDisplayNumbers(withItems);
+}
+
 function orderUserFields(payload) {
   return {
     userId: str(payload.user_id) || null,
@@ -136,9 +175,9 @@ export async function createOrder(payload) {
   const userName = rawUserName || 'مستخدم';
   await execute(
     `INSERT INTO \`orders\`
-      (id, customer_id, customer_name, customer_phone, address_text, map_link, delivery_fee, captain_id, status,
+      (id, customer_id, customer_name, customer_phone, address_text, map_link, delivery_fee, captain_id, status, payment_type,
        created_by_user_id, created_by_user_name, updated_by_user_id, updated_by_user_name)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       orderId,
       customer.id,
@@ -149,6 +188,7 @@ export async function createOrder(payload) {
       num(payload.delivery_fee),
       payload.captain_id || null,
       normalizeStatus(payload.status || 'new'),
+      normalizePaymentType(payload.payment_type),
       userId,
       userName,
       userId,
@@ -192,7 +232,7 @@ export async function updateOrder(orderId, payload) {
   await execute(
     `UPDATE \`orders\`
      SET customer_id = ?, customer_name = ?, customer_phone = ?, address_text = ?, map_link = ?,
-         delivery_fee = ?, captain_id = ?, status = ?, updated_at = ${updatedAt},
+         delivery_fee = ?, captain_id = ?, status = ?, payment_type = ?, updated_at = ${updatedAt},
          updated_by_user_id = ?, updated_by_user_name = ?
      WHERE id = ?`,
     [
@@ -204,6 +244,7 @@ export async function updateOrder(orderId, payload) {
       payload.delivery_fee !== undefined ? num(payload.delivery_fee) : num(existing.delivery_fee),
       payload.captain_id !== undefined ? (payload.captain_id || null) : existing.captain_id,
       payload.status ? normalizeStatus(payload.status) : normalizeStatus(existing.status),
+      payload.payment_type !== undefined ? normalizePaymentType(payload.payment_type) : normalizePaymentType(existing.payment_type),
       userId || existing.updated_by_user_id || existing.created_by_user_id || null,
       nextUserName,
       orderId,
@@ -234,4 +275,35 @@ export async function updateOrder(orderId, payload) {
 
   const rows = await listOrders({});
   return rows.find(r => r.id === orderId) || null;
+}
+
+function assertCaptainStatusTransition(currentStatus, nextStatus) {
+  const current = normalizeStatus(currentStatus);
+  const next = normalizeStatus(nextStatus);
+  const allowed = CAPTAIN_STATUS_FLOW[current];
+  if (!allowed) {
+    throw new Error('لا يمكن تحديث حالة هذا الطلب');
+  }
+  if (Array.isArray(allowed)) {
+    if (!allowed.includes(next)) throw new Error('انتقال الحالة غير مسموح');
+    return next;
+  }
+  if (allowed !== next) throw new Error('انتقال الحالة غير مسموح');
+  return next;
+}
+
+export async function updateCaptainOrderStatus(captainId, orderId, nextStatus) {
+  const existing = await queryOne('SELECT * FROM `orders` WHERE id = ? AND captain_id = ?', [orderId, captainId]);
+  if (!existing) throw new Error('الطلب غير موجود أو غير معيّن لك');
+
+  const status = assertCaptainStatusTransition(existing.status, nextStatus);
+  const updatedAt = isMySQL ? 'NOW()' : "datetime('now')";
+  await execute(
+    `UPDATE \`orders\` SET status = ?, updated_at = ${updatedAt} WHERE id = ?`,
+    [status, orderId]
+  );
+
+  const order = await queryOne('SELECT * FROM `orders` WHERE id = ?', [orderId]);
+  const [enriched] = await attachItems([order]);
+  return enriched;
 }

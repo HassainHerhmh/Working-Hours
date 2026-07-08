@@ -6,7 +6,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
-import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn, migrateShiftPeriodColumns, migrateShiftReminderTable, migrateAttendanceTable, migrateFinanceTables, migrateOrdersTables, migrateOrdersUserColumns, migrateFinanceVouchersTable, migrateFinanceInvoicePostingsTable, migrateFinanceInvoiceOrdersCountColumn, migrateFinanceInvoiceSalesDateColumn, migrateFinanceInvoicePerDate, migrateFinanceCommissionPostingsTable, migrateFinanceCommissionSalesDateColumn, migrateFinanceCommissionPerDate, migrateFinanceVoucherDateColumn, migrateFinanceVoucherTransferColumns, migrateFixTransferVoucherTypes, toDbDateTime } from './database.js';
+import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn, migrateShiftPeriodColumns, migrateShiftReminderTable, migrateAttendanceTable, migrateFinanceTables, migrateOrdersTables, migrateOrdersUserColumns, migrateOrdersPaymentTypeColumn, migrateFinanceVouchersTable, migrateFinanceInvoicePostingsTable, migrateFinanceInvoiceOrdersCountColumn, migrateFinanceInvoiceSalesDateColumn, migrateFinanceInvoicePerDate, migrateFinanceCommissionPostingsTable, migrateFinanceCommissionSalesDateColumn, migrateFinanceCommissionPerDate, migrateFinanceVoucherDateColumn, migrateFinanceVoucherTransferColumns, migrateFixTransferVoucherTypes, toDbDateTime } from './database.js';
 import * as smsGw from './smsGateway.service.js';
 import * as shiftReminder from './shiftReminder.service.js';
 import * as attendance from './attendance.service.js';
@@ -121,6 +121,7 @@ async function seedIfEmpty() {
   await migrateFinanceTables();
   await migrateOrdersTables();
   await migrateOrdersUserColumns();
+  await migrateOrdersPaymentTypeColumn();
   await migrateFinanceVouchersTable();
   await migrateFinanceInvoicePostingsTable();
   await migrateFinanceInvoiceOrdersCountColumn();
@@ -792,6 +793,27 @@ app.post('/api/orders', async (req, res) => {
 app.put('/api/orders/:id', async (req, res) => {
   try {
     res.json(await orders.updateOrder(req.params.id, req.body || {}));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.get('/api/captain/orders/:captainId', async (req, res) => {
+  try {
+    res.json(await orders.listCaptainOrders(req.params.captainId, { status: req.query.status }));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.put('/api/captain/orders/:captainId/:orderId/status', async (req, res) => {
+  try {
+    const order = await orders.updateCaptainOrderStatus(
+      req.params.captainId,
+      req.params.orderId,
+      req.body?.status
+    );
+    res.json(order);
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
