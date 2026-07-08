@@ -1,5 +1,5 @@
 import { v4 as uuid } from 'uuid';
-import { execute, queryAll, queryOne } from './database.js';
+import { execute, queryAll, queryOne, isMySQL } from './database.js';
 
 function num(v) {
   return Math.round((Number(v) || 0) * 100) / 100;
@@ -14,13 +14,14 @@ function normalizeStatus(v) {
   return ['new', 'assigned', 'in_progress', 'done', 'cancelled'].includes(status) ? status : 'new';
 }
 
-async function upsertCustomer({ name, phone, address_text, map_link }) {
-  const customerName = str(name);
+async function upsertCustomer(payload) {
+  const customerName = str(payload.customer_name || payload.name);
   if (!customerName) throw new Error('اسم العميل مطلوب');
 
-  const customerPhone = str(phone);
-  const addressText = str(address_text);
-  const mapLink = str(map_link);
+  const customerPhone = str(payload.customer_phone || payload.phone);
+  const addressText = str(payload.address_text);
+  const mapLink = str(payload.map_link);
+  const updatedAt = isMySQL ? 'NOW()' : "datetime('now')";
 
   let customer = null;
   if (customerPhone) {
@@ -41,7 +42,7 @@ async function upsertCustomer({ name, phone, address_text, map_link }) {
 
   await execute(
     `UPDATE customers
-     SET name = ?, phone = ?, address_text = ?, map_link = ?, updated_at = ${'CURRENT_TIMESTAMP'}
+     SET name = ?, phone = ?, address_text = ?, map_link = ?, updated_at = ${updatedAt}
      WHERE id = ?`,
     [
       customerName,
@@ -101,7 +102,7 @@ export async function listOrders({ status } = {}) {
   }
   const rows = await queryAll(
     `SELECT o.*, c.name AS captain_name, c.captain_number
-     FROM orders o
+     FROM \`orders\` o
      LEFT JOIN captains c ON c.id = o.captain_id
      ${where}
      ORDER BY o.created_at DESC`,
@@ -125,7 +126,7 @@ export async function createOrder(payload) {
   const orderAddress = str(payload.address_text) || customer.address_text || '';
   const orderMap = str(payload.map_link) || customer.map_link || '';
   await execute(
-    `INSERT INTO orders
+    `INSERT INTO \`orders\`
       (id, customer_id, customer_name, customer_phone, address_text, map_link, delivery_fee, captain_id, status)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
@@ -158,7 +159,7 @@ export async function createOrder(payload) {
 }
 
 export async function updateOrder(orderId, payload) {
-  const existing = await queryOne('SELECT * FROM orders WHERE id = ?', [orderId]);
+  const existing = await queryOne('SELECT * FROM `orders` WHERE id = ?', [orderId]);
   if (!existing) throw new Error('الطلب غير موجود');
 
   const customerName = str(payload.customer_name) || existing.customer_name;
@@ -171,10 +172,11 @@ export async function updateOrder(orderId, payload) {
   });
 
   const detailsRows = Array.isArray(payload.items) ? payload.items : null;
+  const updatedAt = isMySQL ? 'NOW()' : "datetime('now')";
   await execute(
-    `UPDATE orders
+    `UPDATE \`orders\`
      SET customer_id = ?, customer_name = ?, customer_phone = ?, address_text = ?, map_link = ?,
-         delivery_fee = ?, captain_id = ?, status = ?, updated_at = CURRENT_TIMESTAMP
+         delivery_fee = ?, captain_id = ?, status = ?, updated_at = ${updatedAt}
      WHERE id = ?`,
     [
       customer.id,
