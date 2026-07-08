@@ -6,11 +6,12 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
-import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn, migrateShiftPeriodColumns, migrateShiftReminderTable, migrateAttendanceTable, migrateFinanceTables, migrateFinanceVouchersTable, migrateFinanceInvoicePostingsTable, migrateFinanceInvoiceOrdersCountColumn, migrateFinanceInvoiceSalesDateColumn, migrateFinanceInvoicePerDate, migrateFinanceCommissionPostingsTable, migrateFinanceCommissionSalesDateColumn, migrateFinanceCommissionPerDate, migrateFinanceVoucherDateColumn, migrateFinanceVoucherTransferColumns, migrateFixTransferVoucherTypes, toDbDateTime } from './database.js';
+import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn, migrateShiftPeriodColumns, migrateShiftReminderTable, migrateAttendanceTable, migrateFinanceTables, migrateOrdersTables, migrateFinanceVouchersTable, migrateFinanceInvoicePostingsTable, migrateFinanceInvoiceOrdersCountColumn, migrateFinanceInvoiceSalesDateColumn, migrateFinanceInvoicePerDate, migrateFinanceCommissionPostingsTable, migrateFinanceCommissionSalesDateColumn, migrateFinanceCommissionPerDate, migrateFinanceVoucherDateColumn, migrateFinanceVoucherTransferColumns, migrateFixTransferVoucherTypes, toDbDateTime } from './database.js';
 import * as smsGw from './smsGateway.service.js';
 import * as shiftReminder from './shiftReminder.service.js';
 import * as attendance from './attendance.service.js';
 import * as finance from './finance.service.js';
+import * as orders from './orders.service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -118,6 +119,7 @@ async function seedIfEmpty() {
   await migrateShiftReminderTable();
   await migrateAttendanceTable();
   await migrateFinanceTables();
+  await migrateOrdersTables();
   await migrateFinanceVouchersTable();
   await migrateFinanceInvoicePostingsTable();
   await migrateFinanceInvoiceOrdersCountColumn();
@@ -663,8 +665,8 @@ app.delete('/api/finance/stores/:id', async (req, res) => {
 
 app.get('/api/finance/captain/:captainId', async (req, res) => {
   try {
-    const { period, date, sales_date } = req.query;
-    res.json(await finance.getCaptainFinance(req.params.captainId, { period, date, sales_date }));
+    const { period, date, from, to, sales_date } = req.query;
+    res.json(await finance.getCaptainFinance(req.params.captainId, { period, date, from, to, sales_date }));
   } catch (err) {
     res.status(404).json({ error: err.message });
   }
@@ -767,6 +769,31 @@ app.get('/api/reports/rent', async (req, res) => {
 app.get('/api/reports/stores', async (req, res) => {
   const { period = 'day', date, from, to } = req.query;
   res.json(await finance.getStoresReport({ period, date, from, to }));
+});
+
+app.get('/api/orders/customers', async (req, res) => {
+  res.json(await orders.listCustomers(req.query.q || ''));
+});
+
+app.get('/api/orders', async (req, res) => {
+  res.json(await orders.listOrders({ status: req.query.status }));
+});
+
+app.post('/api/orders', async (req, res) => {
+  try {
+    const order = await orders.createOrder(req.body || {});
+    res.status(201).json(order);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.put('/api/orders/:id', async (req, res) => {
+  try {
+    res.json(await orders.updateOrder(req.params.id, req.body || {}));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 app.delete('/api/finance/commission-postings/:id', async (req, res) => {

@@ -1,0 +1,216 @@
+import { v4 as uuid } from 'uuid';
+import { execute, queryAll, queryOne } from './database.js';
+
+function num(v) {
+  return Math.round((Number(v) || 0) * 100) / 100;
+}
+
+function str(v) {
+  return String(v || '').trim();
+}
+
+function normalizeStatus(v) {
+  const status = str(v).toLowerCase();
+  return ['new', 'assigned', 'in_progress', 'done', 'cancelled'].includes(status) ? status : 'new';
+}
+
+async function upsertCustomer({ name, phone, address_text, map_link }) {
+  const customerName = str(name);
+  if (!customerName) throw new Error('اسم العميل مطلوب');
+
+  const customerPhone = str(phone);
+  const addressText = str(address_text);
+  const mapLink = str(map_link);
+
+  let customer = null;
+  if (customerPhone) {
+    customer = await queryOne('SELECT * FROM customers WHERE phone = ? ORDER BY created_at DESC LIMIT 1', [customerPhone]);
+  }
+  if (!customer) {
+    customer = await queryOne('SELECT * FROM customers WHERE name = ? ORDER BY created_at DESC LIMIT 1', [customerName]);
+  }
+
+  if (!customer) {
+    const id = uuid();
+    await execute(
+      'INSERT INTO customers (id, name, phone, address_text, map_link) VALUES (?, ?, ?, ?, ?)',
+      [id, customerName, customerPhone, addressText, mapLink]
+    );
+    return queryOne('SELECT * FROM customers WHERE id = ?', [id]);
+  }
+
+  await execute(
+    `UPDATE customers
+     SET name = ?, phone = ?, address_text = ?, map_link = ?, updated_at = ${'CURRENT_TIMESTAMP'}
+     WHERE id = ?`,
+    [
+      customerName,
+      customerPhone || customer.phone || '',
+      addressText || customer.address_text || '',
+      mapLink || customer.map_link || '',
+      customer.id,
+    ]
+  );
+  return queryOne('SELECT * FROM customers WHERE id = ?', [customer.id]);
+}
+
+async function attachItems(orders) {
+  if (!orders.length) return orders;
+  const placeholders = orders.map(() => '?').join(', ');
+  const rows = await queryAll(
+    `SELECT oi.*, s.name AS finance_store_name
+     FROM order_items oi
+     LEFT JOIN finance_stores s ON s.id = oi.store_id
+     WHERE oi.order_id IN (${placeholders})
+     ORDER BY oi.created_at ASC`,
+    orders.map(o => o.id)
+  );
+  const map = new Map();
+  for (const row of rows) {
+    const current = map.get(row.order_id) || [];
+    current.push({
+      id: row.id,
+      store_id: row.store_id,
+      store_name: row.finance_store_name || row.store_name || 'بدون محل',
+      details: row.details || '',
+    });
+    map.set(row.order_id, current);
+  }
+  return orders.map(order => ({ ...order, items: map.get(order.id) || [] }));
+}
+
+export async function listCustomers(queryText = '') {
+  const q = `%${str(queryText)}%`;
+  const rows = await queryAll(
+    `SELECT *
+     FROM customers
+     WHERE name LIKE ? OR phone LIKE ?
+     ORDER BY updated_at DESC, created_at DESC
+     LIMIT 30`,
+    [q, q]
+  );
+  return rows;
+}
+
+export async function listOrders({ status } = {}) {
+  const params = [];
+  let where = '';
+  if (status) {
+    where = 'WHERE o.status = ?';
+    params.push(normalizeStatus(status));
+  }
+  const rows = await queryAll(
+    `SELECT o.*, c.name AS captain_name, c.captain_number
+     FROM orders o
+     LEFT JOIN captains c ON c.id = o.captain_id
+     ${where}
+     ORDER BY o.created_at DESC`,
+    params
+  );
+  return attachItems(rows);
+}
+
+export async function createOrder(payload) {
+  const customer = await upsertCustomer(payload);
+  const detailsRows = Array.isArray(payload.items) ? payload.items : [];
+  const validItems = detailsRows
+    .map((row) => ({
+      store_id: str(row.store_id) || null,
+      details: str(row.details),
+    }))
+    .filter(row => row.details);
+  if (!validItems.length) throw new Error('أدخل تفاصيل الطلب');
+
+  const orderId = uuid();
+  const orderAddress = str(payload.address_text) || customer.address_text || '';
+  const orderMap = str(payload.map_link) || customer.map_link || '';
+  await execute(
+    `INSERT INTO orders
+      (id, customer_id, customer_name, customer_phone, address_text, map_link, delivery_fee, captain_id, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      orderId,
+      customer.id,
+      customer.name,
+      customer.phone || '',
+      orderAddress,
+      orderMap,
+      num(payload.delivery_fee),
+      payload.captain_id || null,
+      normalizeStatus(payload.status || 'new'),
+    ]
+  );
+
+  for (const item of validItems) {
+    let storeName = 'بدون محل';
+    if (item.store_id) {
+      const store = await queryOne('SELECT name FROM finance_stores WHERE id = ?', [item.store_id]);
+      storeName = store?.name || storeName;
+    }
+    await execute(
+      'INSERT INTO order_items (id, order_id, store_id, store_name, details) VALUES (?, ?, ?, ?, ?)',
+      [uuid(), orderId, item.store_id, storeName, item.details]
+    );
+  }
+
+  const rows = await listOrders({});
+  return rows.find(r => r.id === orderId) || null;
+}
+
+export async function updateOrder(orderId, payload) {
+  const existing = await queryOne('SELECT * FROM orders WHERE id = ?', [orderId]);
+  if (!existing) throw new Error('الطلب غير موجود');
+
+  const customerName = str(payload.customer_name) || existing.customer_name;
+  const customerPhone = str(payload.customer_phone) || existing.customer_phone || '';
+  const customer = await upsertCustomer({
+    name: customerName,
+    phone: customerPhone,
+    address_text: str(payload.address_text) || existing.address_text,
+    map_link: str(payload.map_link) || existing.map_link,
+  });
+
+  const detailsRows = Array.isArray(payload.items) ? payload.items : null;
+  await execute(
+    `UPDATE orders
+     SET customer_id = ?, customer_name = ?, customer_phone = ?, address_text = ?, map_link = ?,
+         delivery_fee = ?, captain_id = ?, status = ?, updated_at = CURRENT_TIMESTAMP
+     WHERE id = ?`,
+    [
+      customer.id,
+      customer.name,
+      customer.phone || '',
+      str(payload.address_text) || customer.address_text || '',
+      str(payload.map_link) || customer.map_link || '',
+      payload.delivery_fee !== undefined ? num(payload.delivery_fee) : num(existing.delivery_fee),
+      payload.captain_id !== undefined ? (payload.captain_id || null) : existing.captain_id,
+      payload.status ? normalizeStatus(payload.status) : normalizeStatus(existing.status),
+      orderId,
+    ]
+  );
+
+  if (detailsRows) {
+    const validItems = detailsRows
+      .map((row) => ({
+        store_id: str(row.store_id) || null,
+        details: str(row.details),
+      }))
+      .filter(row => row.details);
+
+    await execute('DELETE FROM order_items WHERE order_id = ?', [orderId]);
+    for (const item of validItems) {
+      let storeName = 'بدون محل';
+      if (item.store_id) {
+        const store = await queryOne('SELECT name FROM finance_stores WHERE id = ?', [item.store_id]);
+        storeName = store?.name || storeName;
+      }
+      await execute(
+        'INSERT INTO order_items (id, order_id, store_id, store_name, details) VALUES (?, ?, ?, ?, ?)',
+        [uuid(), orderId, item.store_id, storeName, item.details]
+      );
+    }
+  }
+
+  const rows = await listOrders({});
+  return rows.find(r => r.id === orderId) || null;
+}

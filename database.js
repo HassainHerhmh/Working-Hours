@@ -436,6 +436,84 @@ export async function migrateFinanceTables() {
   }
 }
 
+export async function migrateOrdersTables() {
+  if (isMySQL) {
+    await execute(`
+      CREATE TABLE IF NOT EXISTS customers (
+        id VARCHAR(36) PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        phone VARCHAR(30) NOT NULL DEFAULT '',
+        address_text VARCHAR(500) DEFAULT '',
+        map_link VARCHAR(1000) DEFAULT '',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      )
+    `);
+    await execute(`
+      CREATE TABLE IF NOT EXISTS orders (
+        id VARCHAR(36) PRIMARY KEY,
+        customer_id VARCHAR(36) NULL,
+        customer_name VARCHAR(255) NOT NULL,
+        customer_phone VARCHAR(30) DEFAULT '',
+        address_text VARCHAR(500) DEFAULT '',
+        map_link VARCHAR(1000) DEFAULT '',
+        delivery_fee DECIMAL(12,2) NOT NULL DEFAULT 0,
+        captain_id VARCHAR(36) NULL,
+        status VARCHAR(30) NOT NULL DEFAULT 'new',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE SET NULL,
+        FOREIGN KEY (captain_id) REFERENCES captains(id) ON DELETE SET NULL
+      )
+    `);
+    await execute(`
+      CREATE TABLE IF NOT EXISTS order_items (
+        id VARCHAR(36) PRIMARY KEY,
+        order_id VARCHAR(36) NOT NULL,
+        store_id VARCHAR(36) NULL,
+        store_name VARCHAR(255) DEFAULT '',
+        details TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
+        FOREIGN KEY (store_id) REFERENCES finance_stores(id) ON DELETE SET NULL
+      )
+    `);
+  } else {
+    sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS customers (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        phone TEXT NOT NULL DEFAULT '',
+        address_text TEXT DEFAULT '',
+        map_link TEXT DEFAULT '',
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS orders (
+        id TEXT PRIMARY KEY,
+        customer_id TEXT NULL REFERENCES customers(id) ON DELETE SET NULL,
+        customer_name TEXT NOT NULL,
+        customer_phone TEXT DEFAULT '',
+        address_text TEXT DEFAULT '',
+        map_link TEXT DEFAULT '',
+        delivery_fee REAL NOT NULL DEFAULT 0,
+        captain_id TEXT NULL REFERENCES captains(id) ON DELETE SET NULL,
+        status TEXT NOT NULL DEFAULT 'new',
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS order_items (
+        id TEXT PRIMARY KEY,
+        order_id TEXT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+        store_id TEXT NULL REFERENCES finance_stores(id) ON DELETE SET NULL,
+        store_name TEXT DEFAULT '',
+        details TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+    `);
+  }
+}
+
 export async function migrateFinanceVouchersTable() {
   if (isMySQL) {
     await execute(`
