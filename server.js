@@ -13,6 +13,12 @@ import * as shiftReminder from './shiftReminder.service.js';
 import * as attendance from './attendance.service.js';
 import * as finance from './finance.service.js';
 import * as orders from './orders.service.js';
+import {
+  checkPlatformLoginAllowed,
+  recordPlatformLoginFailure,
+  clearPlatformLoginFailures,
+  wait as loginWait,
+} from './loginProtection.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -589,24 +595,50 @@ app.get('/api/sms/simulator/inbox/:captainId', async (req, res) => {
 // ─── Platform Admin Login ───────────────────────────────────
 
 app.post('/api/platform-auth/login', async (req, res) => {
-  const { username, password } = req.body;
+  const { username, password, website } = req.body || {};
+  if (website) {
+    return res.status(400).json({ error: 'البريد الإلكتروني أو رقم الهاتف أو كلمة المرور غير صحيحة' });
+  }
   if (!username || !password) {
     return res.status(400).json({ error: 'البريد الإلكتروني أو رقم الهاتف وكلمة المرور مطلوبة' });
   }
+  if (String(password).length > 128) {
+    return res.status(400).json({ error: 'البريد الإلكتروني أو رقم الهاتف أو كلمة المرور غير صحيحة' });
+  }
+
+  const guard = checkPlatformLoginAllowed(req, username);
+  if (!guard.allowed) {
+    return res.status(429).json({
+      error: 'تم تجاوز عدد محاولات الدخول. حاول لاحقاً.',
+      retry_after: guard.retryAfter,
+    });
+  }
+
   const key = String(username).trim();
   const user = await queryOne(
     'SELECT * FROM users WHERE email = ? OR phone = ?',
     [key, key]
   );
-  if (!user || !user.password_hash) {
+
+  const invalidCredentials = async () => {
+    recordPlatformLoginFailure(req, username);
+    await loginWait(guard.delayMs || 800);
     return res.status(401).json({ error: 'البريد الإلكتروني أو رقم الهاتف أو كلمة المرور غير صحيحة' });
+  };
+
+  if (!user || !user.password_hash) {
+    return invalidCredentials();
   }
   if (user.status !== 'active') {
+    recordPlatformLoginFailure(req, username);
+    await loginWait(guard.delayMs || 800);
     return res.status(403).json({ error: 'الحساب معطّل — تواصل مع المدير' });
   }
   if (!bcrypt.compareSync(password, user.password_hash)) {
-    return res.status(401).json({ error: 'البريد الإلكتروني أو رقم الهاتف أو كلمة المرور غير صحيحة' });
+    return invalidCredentials();
   }
+
+  clearPlatformLoginFailures(req, username);
   res.json({ user: sanitizeUser(user), token: user.id });
 });
 
