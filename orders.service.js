@@ -160,11 +160,11 @@ export async function listOrders({ status } = {}) {
 export async function listCaptainOrders(captainId, { status } = {}) {
   const params = [captainId];
   let where = 'WHERE o.captain_id = ?';
-  if (status) {
+  if (status && status !== 'all') {
     where += ' AND o.status = ?';
     params.push(normalizeStatus(status));
   } else {
-    where += " AND o.status NOT IN ('done', 'cancelled')";
+    where += " AND o.status != 'new'";
   }
   const rows = await queryAll(
     `SELECT o.*
