@@ -750,23 +750,23 @@ app.get('/api/finance/commission-postings', async (_, res) => {
 });
 
 app.get('/api/reports/sales', async (req, res) => {
-  const { period = 'day', date, captain_id } = req.query;
-  res.json(await finance.getSalesReport({ period, date, captain_id }));
+  const { period = 'day', date, from, to, captain_id } = req.query;
+  res.json(await finance.getSalesReport({ period, date, from, to, captain_id }));
 });
 
 app.get('/api/reports/commissions', async (req, res) => {
-  const { period = 'day', date, captain_id } = req.query;
-  res.json(await finance.getCommissionReport({ period, date, captain_id }));
+  const { period = 'day', date, from, to, captain_id } = req.query;
+  res.json(await finance.getCommissionReport({ period, date, from, to, captain_id }));
 });
 
 app.get('/api/reports/rent', async (req, res) => {
-  const { period = 'day', date, captain_id } = req.query;
-  res.json(await finance.getRentReport({ period, date, captain_id }));
+  const { period = 'day', date, from, to, captain_id } = req.query;
+  res.json(await finance.getRentReport({ period, date, from, to, captain_id }));
 });
 
 app.get('/api/reports/stores', async (req, res) => {
-  const { period = 'day', date } = req.query;
-  res.json(await finance.getStoresReport({ period, date }));
+  const { period = 'day', date, from, to } = req.query;
+  res.json(await finance.getStoresReport({ period, date, from, to }));
 });
 
 app.delete('/api/finance/commission-postings/:id', async (req, res) => {

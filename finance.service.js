@@ -770,12 +770,21 @@ export async function listAllVouchers(captainId) {
   return normalizeVoucherList(rows);
 }
 
-function getReportRange(period = 'day', date) {
+function getReportRange(period = 'day', date, from, to) {
+  if (period === 'range' && from && to) {
+    const safeFrom = String(from).slice(0, 10);
+    const safeTo = String(to).slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(safeFrom) && /^\d{4}-\d{2}-\d{2}$/.test(safeTo)) {
+      return safeFrom <= safeTo
+        ? { from: safeFrom, to: safeTo }
+        : { from: safeTo, to: safeFrom };
+    }
+  }
   return getDateRange(['day', 'week', 'month'].includes(period) ? period : 'day', date);
 }
 
-export async function getSalesReport({ period = 'day', date, captain_id }) {
-  const range = getReportRange(period, date);
+export async function getSalesReport({ period = 'day', date, from, to, captain_id }) {
+  const range = getReportRange(period, date, from, to);
   const config = await getFinanceConfig();
   const companyRate = num(config.company_commission_rate);
 
@@ -878,8 +887,8 @@ export async function getSalesReport({ period = 'day', date, captain_id }) {
   };
 }
 
-export async function getCommissionReport({ period = 'day', date, captain_id }) {
-  const range = getReportRange(period, date);
+export async function getCommissionReport({ period = 'day', date, from, to, captain_id }) {
+  const range = getReportRange(period, date, from, to);
   const config = await getFinanceConfig();
   const rows = await queryAll(
     `SELECT p.*, c.name AS captain_name, c.captain_number
@@ -930,8 +939,8 @@ export async function getCommissionReport({ period = 'day', date, captain_id }) 
   };
 }
 
-export async function getRentReport({ period = 'day', date, captain_id }) {
-  const commissionReport = await getCommissionReport({ period, date, captain_id });
+export async function getRentReport({ period = 'day', date, from, to, captain_id }) {
+  const commissionReport = await getCommissionReport({ period, date, from, to, captain_id });
   return {
     period: commissionReport.period,
     from: commissionReport.from,
@@ -953,8 +962,8 @@ export async function getRentReport({ period = 'day', date, captain_id }) {
   };
 }
 
-export async function getStoresReport({ period = 'day', date }) {
-  const range = getReportRange(period, date);
+export async function getStoresReport({ period = 'day', date, from, to }) {
+  const range = getReportRange(period, date, from, to);
   const rows = await queryAll(
     `SELECT s.id AS store_id, s.name AS store_name, i.sales_date,
         c.id AS captain_id, c.name AS captain_name, c.captain_number, i.amount
