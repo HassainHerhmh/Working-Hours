@@ -1,7 +1,6 @@
 import { v4 as uuid } from 'uuid';
 import { execute, queryAll, queryOne, isMySQL } from './database.js';
 import { postCompletedOrderFinance } from './finance.service.js';
-import * as smsGw from './smsGateway.service.js';
 
 function num(v) {
   return Math.round((Number(v) || 0) * 100) / 100;
@@ -199,20 +198,6 @@ async function notifyCaptainOrderAssigned(captainId, { customerName, addressText
      VALUES (?, NULL, ?, ?, ?, ?, 'sent', 'order')`,
     [logId, captain.id, captain.name, captain.phone || '', body]
   );
-
-  if (captain.phone) {
-    try {
-      await smsGw.queueSms({
-        recipientPhone: captain.phone,
-        message: body,
-        captainId: captain.id,
-        captainName: captain.name,
-        smsType: 'order',
-      });
-    } catch {
-      // تجاهل أخطاء طابور SMS إن كان الرقم غير صالح
-    }
-  }
 }
 
 export async function createOrder(payload) {
