@@ -6,7 +6,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
-import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn, migrateShiftPeriodColumns, migrateShiftReminderTable, migrateAttendanceTable, migrateFinanceTables, migrateOrdersTables, migrateOrdersUserColumns, migrateOrdersPaymentTypeColumn, migrateOrdersStatusTimestamps, migrateOrdersFinancePostedColumn, migrateOrderItemsInvoiceAmount, migrateFinanceVouchersTable, migrateFinanceInvoicePostingsTable, migrateFinanceInvoiceOrdersCountColumn, migrateFinanceInvoiceSalesDateColumn, migrateFinanceInvoicePerDate, migrateFinanceCommissionPostingsTable, migrateFinanceCommissionSalesDateColumn, migrateFinanceCommissionPerDate, migrateFinanceVoucherDateColumn, migrateFinanceVoucherTransferColumns, migrateFixTransferVoucherTypes, migrateUsersPermissionsColumn, toDbDateTime } from './database.js';
+import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn, migrateShiftPeriodColumns, migrateShiftReminderTable, migrateAttendanceTable, migrateFinanceTables, migrateOrdersTables, migrateOrdersUserColumns, migrateOrdersPaymentTypeColumn, migrateOrdersStatusTimestamps, migrateOrdersFinancePostedColumn, migrateOrderItemsInvoiceAmount, migrateOrderItemsExternalColumn, migrateFinanceVouchersTable, migrateFinanceInvoicePostingsTable, migrateFinanceInvoiceOrdersCountColumn, migrateFinanceInvoiceSalesDateColumn, migrateFinanceInvoicePerDate, migrateFinanceCommissionPostingsTable, migrateFinanceCommissionSalesDateColumn, migrateFinanceCommissionPerDate, migrateFinanceVoucherDateColumn, migrateFinanceVoucherTransferColumns, migrateFixTransferVoucherTypes, migrateUsersPermissionsColumn, toDbDateTime } from './database.js';
 import { getUserPermissions, saveUserPermissions, resolveUserPermissions, createFullPermissions } from './permissions.js';
 import * as smsGw from './smsGateway.service.js';
 import * as shiftReminder from './shiftReminder.service.js';
@@ -136,6 +136,7 @@ async function seedIfEmpty() {
   await migrateOrdersStatusTimestamps();
   await migrateOrdersFinancePostedColumn();
   await migrateOrderItemsInvoiceAmount();
+  await migrateOrderItemsExternalColumn();
   await migrateFinanceVouchersTable();
   await migrateFinanceInvoicePostingsTable();
   await migrateFinanceInvoiceOrdersCountColumn();

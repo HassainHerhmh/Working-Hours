@@ -621,6 +621,20 @@ export async function migrateOrderItemsInvoiceAmount() {
   }
 }
 
+export async function migrateOrderItemsExternalColumn() {
+  if (isMySQL) {
+    const cols = await queryAll("SHOW COLUMNS FROM order_items LIKE 'is_external'");
+    if (!cols.length) {
+      await execute('ALTER TABLE order_items ADD COLUMN is_external TINYINT(1) NOT NULL DEFAULT 0');
+    }
+  } else {
+    const cols = sqlite.prepare('PRAGMA table_info(order_items)').all();
+    if (!cols.some(c => c.name === 'is_external')) {
+      sqlite.exec('ALTER TABLE order_items ADD COLUMN is_external INTEGER NOT NULL DEFAULT 0');
+    }
+  }
+}
+
 export async function migrateFinanceVouchersTable() {
   if (isMySQL) {
     await execute(`

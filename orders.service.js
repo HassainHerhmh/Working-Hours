@@ -30,6 +30,22 @@ function normalizePaymentType(v) {
   return PAYMENT_TYPES.includes(payment) ? payment : 'cash';
 }
 
+const EXTERNAL_STORE_NAME = 'طلب خارجي';
+
+function isExternalItem(row) {
+  return Boolean(row?.is_external) || row?.store_id === '__external__';
+}
+
+function normalizeOrderItemInput(row) {
+  const external = isExternalItem(row);
+  return {
+    store_id: external ? null : (str(row.store_id) || null),
+    details: str(row.details),
+    is_external: external,
+    invoice_amount: num(row.invoice_amount),
+  };
+}
+
 const STATUS_TIMESTAMP_COL = {
   assigned: 'assigned_at',
   in_progress: 'in_progress_at',
@@ -103,21 +119,30 @@ async function attachItems(orders) {
     current.push({
       id: row.id,
       store_id: row.store_id,
-      store_name: row.finance_store_name || row.store_name || 'بدون محل',
+      store_name: row.is_external ? EXTERNAL_STORE_NAME : (row.finance_store_name || row.store_name || 'بدون محل'),
       details: row.details || '',
       invoice_amount: num(row.invoice_amount),
+      is_external: Boolean(row.is_external),
     });
     map.set(row.order_id, current);
   }
   return orders.map((order) => {
     const items = map.get(order.id) || [];
-    const invoice_total = items.reduce((sum, item) => sum + num(item.invoice_amount), 0);
+    const invoice_total = items.reduce(
+      (sum, item) => sum + (item.is_external ? 0 : num(item.invoice_amount)),
+      0
+    );
+    const external_total = items.reduce(
+      (sum, item) => sum + (item.is_external ? num(item.invoice_amount) : 0),
+      0
+    );
     const delivery_fee = num(order.delivery_fee);
     return {
       ...order,
       items,
       invoice_total,
-      grand_total: num(invoice_total + delivery_fee),
+      external_total,
+      grand_total: num(invoice_total + external_total + delivery_fee),
     };
   });
 }
@@ -204,10 +229,7 @@ export async function createOrder(payload) {
   const customer = await upsertCustomer(payload);
   const detailsRows = Array.isArray(payload.items) ? payload.items : [];
   const validItems = detailsRows
-    .map((row) => ({
-      store_id: str(row.store_id) || null,
-      details: str(row.details),
-    }))
+    .map((row) => normalizeOrderItemInput(row))
     .filter(row => row.details);
   if (!validItems.length) throw new Error('أدخل تفاصيل الطلب');
 
@@ -242,14 +264,14 @@ export async function createOrder(payload) {
   await touchStatusTimestamp(orderId, normalizeStatus(payload.status || 'new'), {});
 
   for (const item of validItems) {
-    let storeName = 'بدون محل';
-    if (item.store_id) {
-      const store = await queryOne('SELECT name FROM finance_stores WHERE id = ?', [item.store_id]);
-      storeName = store?.name || storeName;
-    }
+    const storeName = item.is_external
+      ? EXTERNAL_STORE_NAME
+      : (item.store_id
+        ? ((await queryOne('SELECT name FROM finance_stores WHERE id = ?', [item.store_id]))?.name || 'بدون محل')
+        : 'بدون محل');
     await execute(
-      'INSERT INTO order_items (id, order_id, store_id, store_name, details) VALUES (?, ?, ?, ?, ?)',
-      [uuid(), orderId, item.store_id, storeName, item.details]
+      'INSERT INTO order_items (id, order_id, store_id, store_name, details, invoice_amount, is_external) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [uuid(), orderId, item.store_id, storeName, item.details, item.invoice_amount, item.is_external ? 1 : 0]
     );
   }
 
@@ -322,22 +344,19 @@ export async function updateOrder(orderId, payload) {
 
   if (detailsRows) {
     const validItems = detailsRows
-      .map((row) => ({
-        store_id: str(row.store_id) || null,
-        details: str(row.details),
-      }))
+      .map((row) => normalizeOrderItemInput(row))
       .filter(row => row.details);
 
     await execute('DELETE FROM order_items WHERE order_id = ?', [orderId]);
     for (const item of validItems) {
-      let storeName = 'بدون محل';
-      if (item.store_id) {
-        const store = await queryOne('SELECT name FROM finance_stores WHERE id = ?', [item.store_id]);
-        storeName = store?.name || storeName;
-      }
+      const storeName = item.is_external
+        ? EXTERNAL_STORE_NAME
+        : (item.store_id
+          ? ((await queryOne('SELECT name FROM finance_stores WHERE id = ?', [item.store_id]))?.name || 'بدون محل')
+          : 'بدون محل');
       await execute(
-        'INSERT INTO order_items (id, order_id, store_id, store_name, details) VALUES (?, ?, ?, ?, ?)',
-        [uuid(), orderId, item.store_id, storeName, item.details]
+        'INSERT INTO order_items (id, order_id, store_id, store_name, details, invoice_amount, is_external) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [uuid(), orderId, item.store_id, storeName, item.details, item.invoice_amount, item.is_external ? 1 : 0]
       );
     }
   }

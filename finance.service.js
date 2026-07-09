@@ -476,16 +476,22 @@ function isNonCashPaymentType(paymentType) {
   return key === 'transfer' || key === 'credit';
 }
 
-function orderTransfersDebtsAmount(order, invoiceTotal = null) {
+function orderTransfersDebtsAmount(order, invoiceTotal = null, externalTotal = null) {
   if (!isNonCashPaymentType(order?.payment_type)) return 0;
-  const invoice = invoiceTotal !== null ? num(invoiceTotal) : num(order?.items_total);
-  return num(invoice + num(order?.delivery_fee));
+  const invoice = invoiceTotal !== null ? num(invoiceTotal) : num(order?.invoice_total);
+  const external = externalTotal !== null ? num(externalTotal) : num(order?.external_total);
+  const fallbackItems = invoiceTotal === null && externalTotal === null ? num(order?.items_total) : 0;
+  const itemsAmount = invoiceTotal !== null || externalTotal !== null
+    ? num(invoice + external)
+    : fallbackItems;
+  return num(itemsAmount + num(order?.delivery_fee));
 }
 
 async function computeTransfersDebtsFromOrders(captainId, salesDate) {
   const orders = await queryAll(
     `SELECT o.payment_type, o.delivery_fee, o.done_at, o.updated_at,
-      (SELECT COALESCE(SUM(invoice_amount), 0) FROM order_items WHERE order_id = o.id) AS items_total
+      (SELECT COALESCE(SUM(CASE WHEN is_external = 0 THEN invoice_amount ELSE 0 END), 0) FROM order_items WHERE order_id = o.id) AS invoice_total,
+      (SELECT COALESCE(SUM(CASE WHEN is_external = 1 THEN invoice_amount ELSE 0 END), 0) FROM order_items WHERE order_id = o.id) AS external_total
      FROM \`orders\` o
      WHERE o.captain_id = ? AND o.status = 'done' AND o.finance_posted_at IS NOT NULL`,
     [captainId]
@@ -495,7 +501,7 @@ async function computeTransfersDebtsFromOrders(captainId, salesDate) {
   for (const order of orders) {
     const orderDate = toDateKey(order.done_at || order.updated_at);
     if (orderDate !== salesDate) continue;
-    total += orderTransfersDebtsAmount(order);
+    total += orderTransfersDebtsAmount(order, num(order.invoice_total), num(order.external_total));
   }
   return num(total);
 }
@@ -529,8 +535,9 @@ export async function postCompletedOrderFinance(order) {
     .map(item => ({
       store_id: item.store_id,
       amount: num(item.invoice_amount),
+      is_external: Boolean(item.is_external),
     }))
-    .filter(item => item.store_id && item.amount > 0);
+    .filter(item => item.store_id && item.amount > 0 && !item.is_external);
 
   let invoiceOnlyTotal = 0;
   for (const item of validItems) {
@@ -555,8 +562,10 @@ export async function postCompletedOrderFinance(order) {
 
   const deliveryFee = num(order.delivery_fee);
   const paymentType = normalizePaymentType(order.payment_type);
+  const externalTotal = (Array.isArray(order.items) ? order.items : [])
+    .reduce((sum, item) => sum + (item.is_external ? num(item.invoice_amount) : 0), 0);
   const transfersDebtsAmount = isNonCashPaymentType(paymentType)
-    ? num(invoiceOnlyTotal + deliveryFee)
+    ? num(invoiceOnlyTotal + externalTotal + deliveryFee)
     : 0;
 
   const posting = await queryOne(
@@ -1318,7 +1327,8 @@ export async function getCaptainAccountStatement({
   if (mode === 'detailed') {
     const orders = await queryAll(
       `SELECT o.*,
-        (SELECT COALESCE(SUM(invoice_amount), 0) FROM order_items WHERE order_id = o.id) AS items_total
+        (SELECT COALESCE(SUM(CASE WHEN is_external = 0 THEN invoice_amount ELSE 0 END), 0) FROM order_items WHERE order_id = o.id) AS invoice_total,
+        (SELECT COALESCE(SUM(CASE WHEN is_external = 1 THEN invoice_amount ELSE 0 END), 0) FROM order_items WHERE order_id = o.id) AS external_total
        FROM \`orders\` o
        WHERE o.captain_id = ? AND o.status = 'done' AND o.finance_posted_at IS NOT NULL
        ORDER BY COALESCE(o.done_at, o.updated_at) ASC`,
@@ -1331,7 +1341,8 @@ export async function getCaptainAccountStatement({
       if (!activeInvoiceDates.has(orderDate)) continue;
 
       const orderRef = String(orderDisplayMap.get(order.id) || '');
-      const invoiceTotal = num(order.items_total);
+      const invoiceTotal = num(order.invoice_total);
+      const externalTotal = num(order.external_total);
       const deliveryFee = num(order.delivery_fee);
       const paymentType = normalizePaymentType(order.payment_type);
 
@@ -1346,23 +1357,23 @@ export async function getCaptainAccountStatement({
           credit: 0,
           notes: `فاتورة طلب #${orderRef} — ${order.customer_name || ''} — ${PAYMENT_LABELS[paymentType] || paymentType}`,
         });
+      }
 
-        if (isNonCashPaymentType(paymentType)) {
-          const orderTotal = num(invoiceTotal + deliveryFee);
-          if (orderTotal > 0) {
-            events.push({
-              sort_key: `${orderDate}T12:00:01.000|11|${orderRef}`,
-              journal_date: orderDate,
-              reference_type: paymentType === 'transfer' ? 'transfer' : 'credit',
-              reference_id: orderRef,
-              account_name: captain.name,
-              debit: 0,
-              credit: orderTotal,
-              notes: paymentType === 'transfer'
-                ? `حوالة طلب #${orderRef} — ${order.customer_name || ''}`
-                : `آجل طلب #${orderRef} — ${order.customer_name || ''}`,
-            });
-          }
+      if (isNonCashPaymentType(paymentType)) {
+        const orderTotal = num(invoiceTotal + externalTotal + deliveryFee);
+        if (orderTotal > 0) {
+          events.push({
+            sort_key: `${orderDate}T12:00:01.000|11|${orderRef}`,
+            journal_date: orderDate,
+            reference_type: paymentType === 'transfer' ? 'transfer' : 'credit',
+            reference_id: orderRef,
+            account_name: captain.name,
+            debit: 0,
+            credit: orderTotal,
+            notes: paymentType === 'transfer'
+              ? `حوالة طلب #${orderRef} — ${order.customer_name || ''}${externalTotal > 0 && invoiceTotal === 0 ? ' — طلب خارجي' : ''}`
+              : `آجل طلب #${orderRef} — ${order.customer_name || ''}${externalTotal > 0 && invoiceTotal === 0 ? ' — طلب خارجي' : ''}`,
+          });
         }
       }
 
@@ -1387,7 +1398,8 @@ export async function getCaptainAccountStatement({
     const transfersDebtsByDate = new Map();
     const ordersForTransfers = await queryAll(
       `SELECT o.payment_type, o.delivery_fee, o.done_at, o.updated_at,
-        (SELECT COALESCE(SUM(invoice_amount), 0) FROM order_items WHERE order_id = o.id) AS items_total
+        (SELECT COALESCE(SUM(CASE WHEN is_external = 0 THEN invoice_amount ELSE 0 END), 0) FROM order_items WHERE order_id = o.id) AS invoice_total,
+        (SELECT COALESCE(SUM(CASE WHEN is_external = 1 THEN invoice_amount ELSE 0 END), 0) FROM order_items WHERE order_id = o.id) AS external_total
        FROM \`orders\` o
        WHERE o.captain_id = ? AND o.status = 'done' AND o.finance_posted_at IS NOT NULL`,
       [captain_id]
@@ -1395,7 +1407,7 @@ export async function getCaptainAccountStatement({
     for (const order of ordersForTransfers) {
       const orderDate = toDateKey(order.done_at || order.updated_at);
       if (!inDateRange(orderDate, range.from, range.to)) continue;
-      const amt = orderTransfersDebtsAmount(order);
+      const amt = orderTransfersDebtsAmount(order, num(order.invoice_total), num(order.external_total));
       if (amt > 0) {
         transfersDebtsByDate.set(orderDate, num((transfersDebtsByDate.get(orderDate) || 0) + amt));
       }
