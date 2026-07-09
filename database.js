@@ -1173,6 +1173,65 @@ export async function migrateCaptainUsernameColumn() {
   }
 }
 
+export async function migrateOrderInvoiceAttachmentsTable() {
+  if (isMySQL) {
+    await execute(`
+      CREATE TABLE IF NOT EXISTS order_invoice_attachments (
+        id VARCHAR(36) PRIMARY KEY,
+        order_id VARCHAR(36) NOT NULL,
+        captain_id VARCHAR(36) NOT NULL,
+        file_path VARCHAR(1000) NOT NULL,
+        file_name VARCHAR(255) DEFAULT '',
+        mime_type VARCHAR(100) DEFAULT '',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
+        FOREIGN KEY (captain_id) REFERENCES captains(id) ON DELETE CASCADE
+      )
+    `);
+  } else {
+    sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS order_invoice_attachments (
+        id TEXT PRIMARY KEY,
+        order_id TEXT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+        captain_id TEXT NOT NULL REFERENCES captains(id) ON DELETE CASCADE,
+        file_path TEXT NOT NULL,
+        file_name TEXT DEFAULT '',
+        mime_type TEXT DEFAULT '',
+        created_at TEXT DEFAULT (datetime('now'))
+      )
+    `);
+  }
+}
+
+export async function migrateChatMessagesTable() {
+  if (isMySQL) {
+    await execute(`
+      CREATE TABLE IF NOT EXISTS chat_messages (
+        id VARCHAR(36) PRIMARY KEY,
+        captain_id VARCHAR(36) NOT NULL,
+        sender_type VARCHAR(20) NOT NULL,
+        sender_id VARCHAR(36) NULL,
+        sender_name VARCHAR(255) DEFAULT '',
+        message TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (captain_id) REFERENCES captains(id) ON DELETE CASCADE
+      )
+    `);
+  } else {
+    sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS chat_messages (
+        id TEXT PRIMARY KEY,
+        captain_id TEXT NOT NULL REFERENCES captains(id) ON DELETE CASCADE,
+        sender_type TEXT NOT NULL,
+        sender_id TEXT,
+        sender_name TEXT DEFAULT '',
+        message TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now'))
+      )
+    `);
+  }
+}
+
 export function getDbType() {
   return isMySQL ? 'mysql' : 'sqlite';
 }

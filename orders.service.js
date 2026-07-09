@@ -126,6 +126,25 @@ async function attachItems(orders) {
     });
     map.set(row.order_id, current);
   }
+  const attachmentRows = await queryAll(
+    `SELECT id, order_id, file_path, file_name, mime_type, created_at
+     FROM order_invoice_attachments
+     WHERE order_id IN (${placeholders})
+     ORDER BY created_at DESC`,
+    orders.map(o => o.id)
+  );
+  const attachmentMap = new Map();
+  for (const row of attachmentRows) {
+    const current = attachmentMap.get(row.order_id) || [];
+    current.push({
+      id: row.id,
+      file_path: row.file_path,
+      file_name: row.file_name,
+      mime_type: row.mime_type,
+      created_at: row.created_at,
+    });
+    attachmentMap.set(row.order_id, current);
+  }
   return orders.map((order) => {
     const items = map.get(order.id) || [];
     const invoice_total = items.reduce(
@@ -140,6 +159,7 @@ async function attachItems(orders) {
     return {
       ...order,
       items,
+      invoice_attachments: attachmentMap.get(order.id) || [],
       invoice_total,
       external_total,
       grand_total: num(invoice_total + external_total + delivery_fee),
