@@ -357,7 +357,7 @@ export async function getCaptainFinance(captainId, { period, date, sales_date } 
     );
     invoices = await getCaptainInvoices(captainId, normalizedSalesDate);
     transfers_debts = posting
-      ? await syncPostingTransfersDebts(captainId, normalizedSalesDate)
+      ? num(posting.transfers_debts)
       : await computeTransfersDebtsFromOrders(captainId, normalizedSalesDate);
     orders_count = posting ? Number(posting.orders_count || 0) : 0;
     total_invoices = posting
@@ -504,23 +504,6 @@ async function computeTransfersDebtsFromOrders(captainId, salesDate) {
     total += orderTransfersDebtsAmount(order, num(order.invoice_total), num(order.external_total));
   }
   return num(total);
-}
-
-async function syncPostingTransfersDebts(captainId, salesDate) {
-  const posting = await queryOne(
-    'SELECT id, transfers_debts FROM finance_invoice_postings WHERE captain_id = ? AND sales_date = ?',
-    [captainId, salesDate]
-  );
-  if (!posting) return 0;
-
-  const computed = await computeTransfersDebtsFromOrders(captainId, salesDate);
-  if (computed !== num(posting.transfers_debts)) {
-    await execute(
-      'UPDATE finance_invoice_postings SET transfers_debts = ? WHERE id = ?',
-      [computed, posting.id]
-    );
-  }
-  return computed;
 }
 
 export async function postCompletedOrderFinance(order) {
