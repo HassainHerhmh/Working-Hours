@@ -1213,6 +1213,9 @@ export async function migrateChatMessagesTable() {
         sender_id VARCHAR(36) NULL,
         sender_name VARCHAR(255) DEFAULT '',
         message TEXT NOT NULL,
+        attachment_path VARCHAR(1000) NULL,
+        attachment_name VARCHAR(255) NULL,
+        attachment_mime VARCHAR(100) NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (captain_id) REFERENCES captains(id) ON DELETE CASCADE
       )
@@ -1226,9 +1229,36 @@ export async function migrateChatMessagesTable() {
         sender_id TEXT,
         sender_name TEXT DEFAULT '',
         message TEXT NOT NULL,
+        attachment_path TEXT,
+        attachment_name TEXT,
+        attachment_mime TEXT,
         created_at TEXT DEFAULT (datetime('now'))
       )
     `);
+  }
+}
+
+export async function migrateChatMessageAttachmentColumns() {
+  const columns = [
+    { name: 'attachment_path', mysql: 'VARCHAR(1000) NULL', sqlite: 'TEXT' },
+    { name: 'attachment_name', mysql: 'VARCHAR(255) NULL', sqlite: 'TEXT' },
+    { name: 'attachment_mime', mysql: 'VARCHAR(100) NULL', sqlite: 'TEXT' },
+  ];
+
+  if (isMySQL) {
+    for (const col of columns) {
+      const exists = await queryAll(`SHOW COLUMNS FROM chat_messages LIKE '${col.name}'`);
+      if (!exists.length) {
+        await execute(`ALTER TABLE chat_messages ADD COLUMN ${col.name} ${col.mysql}`);
+      }
+    }
+  } else {
+    const existing = sqlite.prepare('PRAGMA table_info(chat_messages)').all();
+    for (const col of columns) {
+      if (!existing.some((c) => c.name === col.name)) {
+        sqlite.exec(`ALTER TABLE chat_messages ADD COLUMN ${col.name} ${col.sqlite}`);
+      }
+    }
   }
 }
 

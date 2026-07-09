@@ -6,7 +6,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
-import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn, migrateShiftPeriodColumns, migrateShiftReminderTable, migrateAttendanceTable, migrateFinanceTables, migrateOrdersTables, migrateOrdersUserColumns, migrateOrdersPaymentTypeColumn, migrateOrdersStatusTimestamps, migrateOrdersFinancePostedColumn, migrateOrderItemsInvoiceAmount, migrateOrderItemsExternalColumn, migrateFinanceVouchersTable, migrateFinanceInvoicePostingsTable, migrateFinanceInvoiceOrdersCountColumn, migrateFinanceInvoiceSalesDateColumn, migrateFinanceInvoicePerDate, migrateFinanceCommissionPostingsTable, migrateFinanceCommissionSalesDateColumn, migrateFinanceCommissionPerDate, migrateFinanceVoucherDateColumn, migrateFinanceVoucherTransferColumns, migrateFixTransferVoucherTypes, migrateUsersPermissionsColumn, migrateOrderInvoiceAttachmentsTable, migrateChatMessagesTable, toDbDateTime } from './database.js';
+import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn, migrateShiftPeriodColumns, migrateShiftReminderTable, migrateAttendanceTable, migrateFinanceTables, migrateOrdersTables, migrateOrdersUserColumns, migrateOrdersPaymentTypeColumn, migrateOrdersStatusTimestamps, migrateOrdersFinancePostedColumn, migrateOrderItemsInvoiceAmount, migrateOrderItemsExternalColumn, migrateFinanceVouchersTable, migrateFinanceInvoicePostingsTable, migrateFinanceInvoiceOrdersCountColumn, migrateFinanceInvoiceSalesDateColumn, migrateFinanceInvoicePerDate, migrateFinanceCommissionPostingsTable, migrateFinanceCommissionSalesDateColumn, migrateFinanceCommissionPerDate, migrateFinanceVoucherDateColumn, migrateFinanceVoucherTransferColumns, migrateFixTransferVoucherTypes, migrateUsersPermissionsColumn, migrateOrderInvoiceAttachmentsTable, migrateChatMessagesTable, migrateChatMessageAttachmentColumns, toDbDateTime } from './database.js';
 import { getUserPermissions, saveUserPermissions, resolveUserPermissions, createFullPermissions } from './permissions.js';
 import * as smsGw from './smsGateway.service.js';
 import * as shiftReminder from './shiftReminder.service.js';
@@ -151,6 +151,7 @@ async function seedIfEmpty() {
   await migrateUsersPermissionsColumn();
   await migrateOrderInvoiceAttachmentsTable();
   await migrateChatMessagesTable();
+  await migrateChatMessageAttachmentColumns();
   const captainCount = Number((await queryOne('SELECT COUNT(*) as c FROM captains')).c);
   if (captainCount === 0) {
     const captains = [
@@ -973,9 +974,37 @@ app.delete('/api/captain/orders/:captainId/:orderId/invoices/:invoiceId', async 
   res.json({ ok: true });
 });
 
+app.get('/api/chat/threads', async (_req, res) => {
+  const rows = await queryAll(`
+    SELECT c.id, c.name, c.captain_number, c.photo,
+      (
+        SELECT message FROM chat_messages
+        WHERE captain_id = c.id
+        ORDER BY created_at DESC
+        LIMIT 1
+      ) AS last_message,
+      (
+        SELECT attachment_name FROM chat_messages
+        WHERE captain_id = c.id AND attachment_path IS NOT NULL AND attachment_path != ''
+        ORDER BY created_at DESC
+        LIMIT 1
+      ) AS last_attachment_name,
+      (
+        SELECT created_at FROM chat_messages
+        WHERE captain_id = c.id
+        ORDER BY created_at DESC
+        LIMIT 1
+      ) AS last_message_at
+    FROM captains c
+    ORDER BY last_message_at IS NULL, last_message_at DESC, c.name ASC
+  `);
+  res.json(rows);
+});
+
 app.get('/api/chat/:captainId', async (req, res) => {
   const rows = await queryAll(
-    `SELECT id, captain_id, sender_type, sender_id, sender_name, message, created_at
+    `SELECT id, captain_id, sender_type, sender_id, sender_name, message,
+            attachment_path, attachment_name, attachment_mime, created_at
      FROM chat_messages
      WHERE captain_id = ?
      ORDER BY created_at ASC`,
@@ -984,31 +1013,42 @@ app.get('/api/chat/:captainId', async (req, res) => {
   res.json(rows);
 });
 
-app.post('/api/chat/:captainId', async (req, res) => {
-  const message = String(req.body?.message || '').trim();
-  if (!message) return res.status(400).json({ error: 'نص الرسالة مطلوب' });
-  const captain = await queryOne('SELECT id FROM captains WHERE id = ?', [req.params.captainId]);
-  if (!captain) return res.status(404).json({ error: 'الكابتن غير موجود' });
+app.post('/api/chat/:captainId', upload.single('attachment'), async (req, res) => {
+  try {
+    const message = String(req.body?.message || '').trim();
+    const hasFile = Boolean(req.file);
+    if (!message && !hasFile) return res.status(400).json({ error: 'نص الرسالة أو مرفق مطلوب' });
+    const captain = await queryOne('SELECT id FROM captains WHERE id = ?', [req.params.captainId]);
+    if (!captain) return res.status(404).json({ error: 'الكابتن غير موجود' });
 
-  const id = uuid();
-  await execute(
-    `INSERT INTO chat_messages (id, captain_id, sender_type, sender_id, sender_name, message)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [
-      id,
-      req.params.captainId,
-      'platform',
-      req.body?.sender_id || null,
-      req.body?.sender_name || 'المنصة',
-      message,
-    ]
-  );
-  res.status(201).json(await queryOne('SELECT * FROM chat_messages WHERE id = ?', [id]));
+    const id = uuid();
+    await execute(
+      `INSERT INTO chat_messages (
+        id, captain_id, sender_type, sender_id, sender_name, message,
+        attachment_path, attachment_name, attachment_mime
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        req.params.captainId,
+        'platform',
+        req.body?.sender_id || null,
+        req.body?.sender_name || 'المنصة',
+        message,
+        hasFile ? `/uploads/${req.file.filename}` : null,
+        hasFile ? (req.file.originalname || req.file.filename) : null,
+        hasFile ? (req.file.mimetype || '') : null,
+      ]
+    );
+    res.status(201).json(await queryOne('SELECT * FROM chat_messages WHERE id = ?', [id]));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 app.get('/api/captain/chat/:captainId', async (req, res) => {
   const rows = await queryAll(
-    `SELECT id, captain_id, sender_type, sender_id, sender_name, message, created_at
+    `SELECT id, captain_id, sender_type, sender_id, sender_name, message,
+            attachment_path, attachment_name, attachment_mime, created_at
      FROM chat_messages
      WHERE captain_id = ?
      ORDER BY created_at ASC`,
@@ -1017,19 +1057,36 @@ app.get('/api/captain/chat/:captainId', async (req, res) => {
   res.json(rows);
 });
 
-app.post('/api/captain/chat/:captainId', async (req, res) => {
-  const message = String(req.body?.message || '').trim();
-  if (!message) return res.status(400).json({ error: 'نص الرسالة مطلوب' });
-  const captain = await queryOne('SELECT id, name FROM captains WHERE id = ?', [req.params.captainId]);
-  if (!captain) return res.status(404).json({ error: 'الكابتن غير موجود' });
+app.post('/api/captain/chat/:captainId', upload.single('attachment'), async (req, res) => {
+  try {
+    const message = String(req.body?.message || '').trim();
+    const hasFile = Boolean(req.file);
+    if (!message && !hasFile) return res.status(400).json({ error: 'نص الرسالة أو مرفق مطلوب' });
+    const captain = await queryOne('SELECT id, name FROM captains WHERE id = ?', [req.params.captainId]);
+    if (!captain) return res.status(404).json({ error: 'الكابتن غير موجود' });
 
-  const id = uuid();
-  await execute(
-    `INSERT INTO chat_messages (id, captain_id, sender_type, sender_id, sender_name, message)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [id, req.params.captainId, 'captain', req.params.captainId, captain.name || 'الكابتن', message]
-  );
-  res.status(201).json(await queryOne('SELECT * FROM chat_messages WHERE id = ?', [id]));
+    const id = uuid();
+    await execute(
+      `INSERT INTO chat_messages (
+        id, captain_id, sender_type, sender_id, sender_name, message,
+        attachment_path, attachment_name, attachment_mime
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        req.params.captainId,
+        'captain',
+        req.params.captainId,
+        captain.name || 'الكابتن',
+        message,
+        hasFile ? `/uploads/${req.file.filename}` : null,
+        hasFile ? (req.file.originalname || req.file.filename) : null,
+        hasFile ? (req.file.mimetype || '') : null,
+      ]
+    );
+    res.status(201).json(await queryOne('SELECT * FROM chat_messages WHERE id = ?', [id]));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 app.delete('/api/finance/commission-postings/:id', async (req, res) => {
