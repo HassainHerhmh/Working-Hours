@@ -893,7 +893,10 @@ app.put('/api/captain/orders/:captainId/:orderId/status', async (req, res) => {
     const order = await orders.updateCaptainOrderStatus(
       req.params.captainId,
       req.params.orderId,
-      req.body?.status
+      {
+        status: req.body?.status,
+        payment_type: req.body?.payment_type,
+      }
     );
     res.json(order);
   } catch (err) {

@@ -419,16 +419,26 @@ function assertCaptainStatusTransition(currentStatus, nextStatus) {
   return next;
 }
 
-export async function updateCaptainOrderStatus(captainId, orderId, nextStatus) {
+export async function updateCaptainOrderStatus(captainId, orderId, input) {
   const existing = await queryOne('SELECT * FROM `orders` WHERE id = ? AND captain_id = ?', [orderId, captainId]);
   if (!existing) throw new Error('الطلب غير موجود أو غير معيّن لك');
 
+  const nextStatus = typeof input === 'string' ? input : input?.status;
+  const nextPaymentType = input && typeof input === 'object' ? input.payment_type : undefined;
   const status = assertCaptainStatusTransition(existing.status, nextStatus);
+  const currentStatus = normalizeStatus(existing.status);
+  const canEditPayment = ['assigned', 'in_progress', 'on_delivery'].includes(currentStatus);
+  if (nextPaymentType !== undefined && !canEditPayment) {
+    throw new Error('لا يمكن تعديل طريقة الدفع بعد اكتمال أو إلغاء الطلب');
+  }
   const captain = await queryOne('SELECT name FROM captains WHERE id = ?', [captainId]);
   const updatedAt = isMySQL ? 'NOW()' : "datetime('now')";
+  const paymentType = nextPaymentType !== undefined
+    ? normalizePaymentType(nextPaymentType)
+    : normalizePaymentType(existing.payment_type);
   await execute(
-    `UPDATE \`orders\` SET status = ?, updated_at = ${updatedAt}, updated_by_user_id = ?, updated_by_user_name = ? WHERE id = ?`,
-    [status, captainId, captain?.name || 'كابتن', orderId]
+    `UPDATE \`orders\` SET status = ?, payment_type = ?, updated_at = ${updatedAt}, updated_by_user_id = ?, updated_by_user_name = ? WHERE id = ?`,
+    [status, paymentType, captainId, captain?.name || 'كابتن', orderId]
   );
 
   await touchStatusTimestamp(orderId, status, existing);
