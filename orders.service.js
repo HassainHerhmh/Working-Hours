@@ -1,6 +1,7 @@
 import { v4 as uuid } from 'uuid';
+import { yemenDateKey } from './attendance.service.js';
 import { execute, queryAll, queryOne, isMySQL } from './database.js';
-import { postCompletedOrderFinance } from './finance.service.js';
+import { postCompletedOrderFinance, reconcileCaptainDayFinance } from './finance.service.js';
 
 function num(v) {
   return Math.round((Number(v) || 0) * 100) / 100;
@@ -28,6 +29,15 @@ function normalizeStatus(v) {
 function normalizePaymentType(v) {
   const payment = str(v).toLowerCase();
   return PAYMENT_TYPES.includes(payment) ? payment : 'cash';
+}
+
+function toOrderSalesDate(order) {
+  const raw = order?.done_at || order?.updated_at || order?.created_at;
+  if (!raw) return '';
+  const value = String(raw);
+  const d = new Date(value.includes('T') ? value : value.replace(' ', 'T'));
+  if (Number.isNaN(d.getTime())) return value.slice(0, 10);
+  return yemenDateKey(d);
 }
 
 const EXTERNAL_STORE_NAME = 'طلب خارجي';
@@ -399,6 +409,8 @@ export async function updateOrder(orderId, payload) {
     const full = await queryOne('SELECT * FROM `orders` WHERE id = ?', [orderId]);
     const [enriched] = await attachItems([full]);
     await postCompletedOrderFinance(enriched);
+  } else if (existing.finance_posted_at && normalizeStatus(existing.status) === 'done' && existing.captain_id) {
+    await reconcileCaptainDayFinance(existing.captain_id, toOrderSalesDate(existing));
   }
 
   return updated;

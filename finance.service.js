@@ -351,13 +351,20 @@ export async function getCaptainFinance(captainId, { period, date, sales_date } 
   let previous_balance = null;
 
   if (normalizedSalesDate) {
-    const posting = await queryOne(
+    let posting = await queryOne(
       'SELECT * FROM finance_invoice_postings WHERE captain_id = ? AND sales_date = ?',
       [captainId, normalizedSalesDate]
     );
+    if (posting) {
+      await reconcileCaptainDayFinance(captainId, normalizedSalesDate);
+      posting = await queryOne(
+        'SELECT * FROM finance_invoice_postings WHERE captain_id = ? AND sales_date = ?',
+        [captainId, normalizedSalesDate]
+      );
+    }
     invoices = await getCaptainInvoices(captainId, normalizedSalesDate);
     transfers_debts = posting
-      ? await syncPostingTransfersDebts(captainId, normalizedSalesDate)
+      ? num(posting.transfers_debts)
       : await computeTransfersDebtsFromOrders(captainId, normalizedSalesDate);
     orders_count = posting ? Number(posting.orders_count || 0) : 0;
     total_invoices = posting
@@ -487,16 +494,19 @@ function orderTransfersDebtsAmount(order, invoiceTotal = null, externalTotal = n
   return num(itemsAmount + num(order?.delivery_fee));
 }
 
-async function computeTransfersDebtsFromOrders(captainId, salesDate) {
-  const orders = await queryAll(
-    `SELECT o.payment_type, o.delivery_fee, o.done_at, o.updated_at,
+async function getPostedDoneOrdersWithTotals(captainId) {
+  return queryAll(
+    `SELECT o.id, o.payment_type, o.delivery_fee, o.done_at, o.updated_at,
       (SELECT COALESCE(SUM(CASE WHEN is_external = 0 THEN invoice_amount ELSE 0 END), 0) FROM order_items WHERE order_id = o.id) AS invoice_total,
       (SELECT COALESCE(SUM(CASE WHEN is_external = 1 THEN invoice_amount ELSE 0 END), 0) FROM order_items WHERE order_id = o.id) AS external_total
      FROM \`orders\` o
      WHERE o.captain_id = ? AND o.status = 'done' AND o.finance_posted_at IS NOT NULL`,
     [captainId]
   );
+}
 
+async function computeTransfersDebtsFromOrders(captainId, salesDate) {
+  const orders = await getPostedDoneOrdersWithTotals(captainId);
   let total = 0;
   for (const order of orders) {
     const orderDate = toDateKey(order.done_at || order.updated_at);
@@ -506,21 +516,92 @@ async function computeTransfersDebtsFromOrders(captainId, salesDate) {
   return num(total);
 }
 
-async function syncPostingTransfersDebts(captainId, salesDate) {
-  const posting = await queryOne(
-    'SELECT id, transfers_debts FROM finance_invoice_postings WHERE captain_id = ? AND sales_date = ?',
-    [captainId, salesDate]
+async function computeStoreAmountsFromOrders(captainId, salesDate) {
+  const rows = await queryAll(
+    `SELECT oi.store_id, oi.invoice_amount, o.done_at, o.updated_at
+     FROM order_items oi
+     INNER JOIN \`orders\` o ON o.id = oi.order_id
+     WHERE o.captain_id = ? AND o.status = 'done' AND o.finance_posted_at IS NOT NULL
+       AND oi.is_external = 0 AND oi.store_id IS NOT NULL AND oi.invoice_amount > 0`,
+    [captainId]
   );
-  if (!posting) return 0;
 
-  const computed = await computeTransfersDebtsFromOrders(captainId, salesDate);
-  if (computed !== num(posting.transfers_debts)) {
+  const amounts = new Map();
+  for (const row of rows) {
+    const orderDate = toDateKey(row.done_at || row.updated_at);
+    if (orderDate !== salesDate) continue;
+    amounts.set(row.store_id, num((amounts.get(row.store_id) || 0) + num(row.invoice_amount)));
+  }
+  return amounts;
+}
+
+export async function reconcileCaptainDayFinance(captainId, salesDate) {
+  const normalizedDate = normalizeSalesDate(salesDate);
+  const posting = await queryOne(
+    'SELECT id, total_invoices, orders_count, transfers_debts FROM finance_invoice_postings WHERE captain_id = ? AND sales_date = ?',
+    [captainId, normalizedDate]
+  );
+  if (!posting) return null;
+
+  const orders = await getPostedDoneOrdersWithTotals(captainId);
+  let totalInvoices = 0;
+  let ordersCount = 0;
+  let transfersDebts = 0;
+  let deliveryFees = 0;
+
+  for (const order of orders) {
+    const orderDate = toDateKey(order.done_at || order.updated_at);
+    if (orderDate !== normalizedDate) continue;
+    ordersCount += 1;
+    const invoiceTotal = num(order.invoice_total);
+    const externalTotal = num(order.external_total);
+    totalInvoices += invoiceTotal;
+    transfersDebts += orderTransfersDebtsAmount(order, invoiceTotal, externalTotal);
+    deliveryFees += num(order.delivery_fee);
+  }
+
+  if (ordersCount === 0) return null;
+
+  const storeAmounts = await computeStoreAmountsFromOrders(captainId, normalizedDate);
+  const postingChanged = num(posting.total_invoices) !== totalInvoices
+    || Number(posting.orders_count || 0) !== ordersCount
+    || num(posting.transfers_debts) !== transfersDebts;
+
+  if (postingChanged) {
     await execute(
-      'UPDATE finance_invoice_postings SET transfers_debts = ? WHERE id = ?',
-      [computed, posting.id]
+      'UPDATE finance_invoice_postings SET total_invoices = ?, orders_count = ?, transfers_debts = ? WHERE id = ?',
+      [totalInvoices, ordersCount, transfersDebts, posting.id]
     );
   }
-  return computed;
+
+  await execute(
+    'DELETE FROM captain_store_invoices WHERE captain_id = ? AND sales_date = ?',
+    [captainId, normalizedDate]
+  );
+  for (const [storeId, amount] of storeAmounts) {
+    await execute(
+      'INSERT INTO captain_store_invoices (id, captain_id, store_id, amount, sales_date) VALUES (?, ?, ?, ?, ?)',
+      [uuid(), captainId, storeId, amount, normalizedDate]
+    );
+  }
+
+  const commissionPosting = await queryOne(
+    'SELECT id, total_commission, rent FROM finance_commission_postings WHERE captain_id = ? AND sales_date = ?',
+    [captainId, normalizedDate]
+  );
+  if (commissionPosting && num(commissionPosting.total_commission) !== deliveryFees) {
+    await execute(
+      'UPDATE finance_commission_postings SET total_commission = ? WHERE id = ?',
+      [deliveryFees, commissionPosting.id]
+    );
+  }
+
+  return {
+    total_invoices: totalInvoices,
+    orders_count: ordersCount,
+    transfers_debts: transfersDebts,
+    delivery_fees: deliveryFees,
+  };
 }
 
 export async function postCompletedOrderFinance(order) {
@@ -531,7 +612,8 @@ export async function postCompletedOrderFinance(order) {
 
   const captainId = order.captain_id;
   const salesDate = normalizeSalesDate(order.done_at || order.updated_at || order.created_at);
-  const validItems = (Array.isArray(order.items) ? order.items : [])
+  const orderItems = Array.isArray(order.items) ? order.items : [];
+  const validItems = orderItems
     .map(item => ({
       store_id: item.store_id,
       amount: num(item.invoice_amount),
@@ -539,9 +621,11 @@ export async function postCompletedOrderFinance(order) {
     }))
     .filter(item => item.store_id && item.amount > 0 && !item.is_external);
 
-  let invoiceOnlyTotal = 0;
+  const invoiceOnlyTotal = orderItems.reduce(
+    (sum, item) => sum + (item.is_external ? 0 : num(item.invoice_amount)),
+    0
+  );
   for (const item of validItems) {
-    invoiceOnlyTotal += item.amount;
     const existingItem = await queryOne(
       'SELECT id, amount FROM captain_store_invoices WHERE captain_id = ? AND store_id = ? AND sales_date = ?',
       [captainId, item.store_id, salesDate]
@@ -633,6 +717,20 @@ async function recordInvoicePosting(captainId, totalInvoices, ordersCount, trans
 }
 
 export async function listInvoicePostings() {
+  const rows = await queryAll(`
+    SELECT p.*, c.name AS captain_name, c.captain_number
+    FROM finance_invoice_postings p
+    JOIN captains c ON c.id = p.captain_id
+    ORDER BY p.posted_at DESC
+  `);
+  const seen = new Set();
+  for (const row of rows) {
+    const salesDate = row.sales_date || toDateKey(row.posted_at);
+    const key = `${row.captain_id}:${salesDate}`;
+    if (!salesDate || seen.has(key)) continue;
+    seen.add(key);
+    await reconcileCaptainDayFinance(row.captain_id, salesDate);
+  }
   return queryAll(`
     SELECT p.*, c.name AS captain_name, c.captain_number
     FROM finance_invoice_postings p
