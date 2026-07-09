@@ -407,6 +407,7 @@ export async function updateOrder(orderId, payload) {
 function assertCaptainStatusTransition(currentStatus, nextStatus) {
   const current = normalizeStatus(currentStatus);
   const next = normalizeStatus(nextStatus);
+  if (current === next) return next;
   const allowed = CAPTAIN_STATUS_FLOW[current];
   if (!allowed) {
     throw new Error('لا يمكن تحديث حالة هذا الطلب');
@@ -441,12 +442,14 @@ export async function updateCaptainOrderStatus(captainId, orderId, input) {
     [status, paymentType, captainId, captain?.name || 'كابتن', orderId]
   );
 
-  await touchStatusTimestamp(orderId, status, existing);
+  if (status !== currentStatus) {
+    await touchStatusTimestamp(orderId, status, existing);
+  }
 
   const order = await queryOne('SELECT * FROM `orders` WHERE id = ?', [orderId]);
   const [enriched] = await attachItems([order]);
 
-  if (status === 'done') {
+  if (status === 'done' && currentStatus !== 'done') {
     await postCompletedOrderFinance(enriched);
   }
 
