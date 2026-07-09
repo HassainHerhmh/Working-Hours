@@ -369,7 +369,19 @@ export async function updateOrder(orderId, payload) {
   }
 
   const rows = await listOrders({});
-  return rows.find(r => r.id === orderId) || null;
+  const updated = rows.find(r => r.id === orderId) || null;
+
+  if (
+    nextStatus === 'done'
+    && normalizeStatus(existing.status) !== 'done'
+    && updated?.captain_id
+  ) {
+    const full = await queryOne('SELECT * FROM `orders` WHERE id = ?', [orderId]);
+    const [enriched] = await attachItems([full]);
+    await postCompletedOrderFinance(enriched);
+  }
+
+  return updated;
 }
 
 function assertCaptainStatusTransition(currentStatus, nextStatus) {

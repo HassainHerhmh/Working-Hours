@@ -1325,6 +1325,9 @@ export async function getCaptainAccountStatement({
   }
 
   if (mode === 'detailed') {
+    const shownInvoiceByDate = new Map();
+    const shownTransfersByDate = new Map();
+
     const orders = await queryAll(
       `SELECT o.*,
         (SELECT COALESCE(SUM(CASE WHEN is_external = 0 THEN invoice_amount ELSE 0 END), 0) FROM order_items WHERE order_id = o.id) AS invoice_total,
@@ -1347,6 +1350,10 @@ export async function getCaptainAccountStatement({
       const paymentType = normalizePaymentType(order.payment_type);
 
       if (invoiceTotal > 0) {
+        shownInvoiceByDate.set(
+          orderDate,
+          num((shownInvoiceByDate.get(orderDate) || 0) + invoiceTotal)
+        );
         events.push({
           sort_key: `${orderDate}T12:00:00.000|10|${orderRef}`,
           journal_date: orderDate,
@@ -1362,6 +1369,10 @@ export async function getCaptainAccountStatement({
       if (isNonCashPaymentType(paymentType)) {
         const orderTotal = num(invoiceTotal + externalTotal + deliveryFee);
         if (orderTotal > 0) {
+          shownTransfersByDate.set(
+            orderDate,
+            num((shownTransfersByDate.get(orderDate) || 0) + orderTotal)
+          );
           events.push({
             sort_key: `${orderDate}T12:00:01.000|11|${orderRef}`,
             journal_date: orderDate,
@@ -1392,6 +1403,83 @@ export async function getCaptainAccountStatement({
             notes: `عمولة طلب #${orderRef}`,
           });
         }
+      }
+    }
+
+    const manualPostings = await queryAll(
+      `SELECT * FROM finance_invoice_postings
+       WHERE captain_id = ? AND sales_date >= ? AND sales_date <= ?
+       ORDER BY sales_date ASC`,
+      [captain_id, range.from, range.to]
+    );
+    const storeInvoicesInRange = await getCaptainInvoices(captain_id, { from: range.from, to: range.to });
+    const storeInvoicesByDate = new Map();
+    for (const inv of storeInvoicesInRange) {
+      const salesDate = inv.sales_date || toDateKey(inv.created_at);
+      if (!storeInvoicesByDate.has(salesDate)) storeInvoicesByDate.set(salesDate, []);
+      storeInvoicesByDate.get(salesDate).push(inv);
+    }
+
+    for (const posting of manualPostings) {
+      const salesDate = posting.sales_date || toDateKey(posting.posted_at);
+      if (!inDateRange(salesDate, range.from, range.to)) continue;
+
+      const postingInvoices = num(posting.total_invoices);
+      const shownFromOrders = num(shownInvoiceByDate.get(salesDate) || 0);
+      const postingTransfers = num(posting.transfers_debts);
+      const shownTransfers = num(shownTransfersByDate.get(salesDate) || 0);
+      const ordersCount = Number(posting.orders_count || 0);
+
+      if (postingInvoices > shownFromOrders + 0.001) {
+        const storeLines = storeInvoicesByDate.get(salesDate) || [];
+        if (shownFromOrders < 0.001 && storeLines.length > 0) {
+          for (const inv of storeLines) {
+            const amount = num(inv.amount);
+            if (amount <= 0) continue;
+            events.push({
+              sort_key: `${salesDate}T08:30:00.000|10|${inv.store_id}`,
+              journal_date: salesDate,
+              reference_type: 'invoice_posting',
+              reference_id: ordersCount ? String(ordersCount) : '',
+              account_name: captain.name,
+              debit: amount,
+              credit: 0,
+              notes: inv.store_name
+                ? `فاتورة يدوية — ${inv.store_name} — يوم ${salesDate}`
+                : `فاتورة يدوية — يوم ${salesDate}`,
+            });
+          }
+        } else {
+          const manualAmount = num(postingInvoices - shownFromOrders);
+          events.push({
+            sort_key: `${salesDate}T08:00:00.000|10|inv-manual`,
+            journal_date: salesDate,
+            reference_type: 'invoice_posting',
+            reference_id: ordersCount ? String(ordersCount) : '',
+            account_name: captain.name,
+            debit: manualAmount,
+            credit: 0,
+            notes: shownFromOrders > 0
+              ? `فواتير يدوية إضافية — يوم ${salesDate}`
+              : (ordersCount
+                ? `ترحيل فواتير يدوية — ${ordersCount} طلب — يوم ${salesDate}`
+                : `ترحيل فواتير يدوية — يوم ${salesDate}`),
+          });
+        }
+      }
+
+      if (postingTransfers > shownTransfers + 0.001) {
+        const manualTransfers = num(postingTransfers - shownTransfers);
+        events.push({
+          sort_key: `${salesDate}T08:00:01.000|11|credit-manual`,
+          journal_date: salesDate,
+          reference_type: 'credit',
+          reference_id: ordersCount ? String(ordersCount) : '',
+          account_name: captain.name,
+          debit: 0,
+          credit: manualTransfers,
+          notes: `حوالات + آجل يدوية يوم ${salesDate}`,
+        });
       }
     }
   } else {
