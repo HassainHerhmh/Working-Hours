@@ -994,7 +994,13 @@ app.get('/api/chat/threads', async (_req, res) => {
         WHERE captain_id = c.id
         ORDER BY created_at DESC
         LIMIT 1
-      ) AS last_message_at
+      ) AS last_message_at,
+      (
+        SELECT sender_type FROM chat_messages
+        WHERE captain_id = c.id
+        ORDER BY created_at DESC
+        LIMIT 1
+      ) AS last_sender_type
     FROM captains c
     ORDER BY last_message_at IS NULL, last_message_at DESC, c.name ASC
   `);
