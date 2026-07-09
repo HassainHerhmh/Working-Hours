@@ -7,6 +7,7 @@ export const PERMISSION_SECTION_KEYS = [
   'captains',
   'shifts',
   'messages',
+  'chat',
   'orders',
   'finance',
   'reports_attendance',
