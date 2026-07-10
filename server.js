@@ -6,7 +6,46 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
-import { initDb, queryAll, queryOne, execute, getDbType, nowExpr, migrateCaptainPasswordColumn, migrateCaptainUsernameColumn, migrateShiftPeriodColumns, migrateShiftReminderTable, migrateAttendanceTable, migrateFinanceTables, migrateOrdersTables, migrateOrdersUserColumns, migrateOrdersPaymentTypeColumn, migrateOrdersStatusTimestamps, migrateOrdersFinancePostedColumn, migrateOrderItemsInvoiceAmount, migrateOrderItemsExternalColumn, migrateFinanceVouchersTable, migrateFinanceInvoicePostingsTable, migrateFinanceInvoiceOrdersCountColumn, migrateFinanceInvoiceSalesDateColumn, migrateFinanceInvoicePerDate, migrateFinanceCommissionPostingsTable, migrateFinanceCommissionSalesDateColumn, migrateFinanceCommissionPerDate, migrateFinanceVoucherDateColumn, migrateFinanceVoucherTransferColumns, migrateFixTransferVoucherTypes, migrateUsersPermissionsColumn, migrateOrderInvoiceAttachmentsTable, migrateChatMessagesTable, migrateChatMessageAttachmentColumns, toDbDateTime } from './database.js';
+import * as chat from './chat.service.js';
+import {
+  initDb,
+  queryAll,
+  queryOne,
+  execute,
+  getDbType,
+  nowExpr,
+  migrateCaptainPasswordColumn,
+  migrateCaptainUsernameColumn,
+  migrateShiftPeriodColumns,
+  migrateShiftReminderTable,
+  migrateAttendanceTable,
+  migrateFinanceTables,
+  migrateOrdersTables,
+  migrateOrdersUserColumns,
+  migrateOrdersPaymentTypeColumn,
+  migrateOrdersStatusTimestamps,
+  migrateOrdersFinancePostedColumn,
+  migrateOrderItemsInvoiceAmount,
+  migrateOrderItemsExternalColumn,
+  migrateFinanceVouchersTable,
+  migrateFinanceInvoicePostingsTable,
+  migrateFinanceInvoiceOrdersCountColumn,
+  migrateFinanceInvoiceSalesDateColumn,
+  migrateFinanceInvoicePerDate,
+  migrateFinanceCommissionPostingsTable,
+  migrateFinanceCommissionSalesDateColumn,
+  migrateFinanceCommissionPerDate,
+  migrateFinanceVoucherDateColumn,
+  migrateFinanceVoucherTransferColumns,
+  migrateFixTransferVoucherTypes,
+  migrateUsersPermissionsColumn,
+  migrateOrderInvoiceAttachmentsTable,
+  migrateChatMessagesTable,
+  migrateChatMessageAttachmentColumns,
+  migrateFinanceStoreDiscountColumn,
+  migrateChatMessageReadColumns,
+  toDbDateTime,
+} from './database.js';
 import { getUserPermissions, saveUserPermissions, resolveUserPermissions, createFullPermissions } from './permissions.js';
 import * as smsGw from './smsGateway.service.js';
 import * as shiftReminder from './shiftReminder.service.js';
@@ -152,6 +191,8 @@ async function seedIfEmpty() {
   await migrateOrderInvoiceAttachmentsTable();
   await migrateChatMessagesTable();
   await migrateChatMessageAttachmentColumns();
+  await migrateFinanceStoreDiscountColumn();
+  await migrateChatMessageReadColumns();
   const captainCount = Number((await queryOne('SELECT COUNT(*) as c FROM captains')).c);
   if (captainCount === 0) {
     const captains = [
@@ -707,7 +748,7 @@ app.get('/api/finance/stores', async (_, res) => {
 
 app.post('/api/finance/stores', async (req, res) => {
   try {
-    const store = await finance.createStore(req.body.name);
+    const store = await finance.createStore(req.body.name, req.body.discount_percent);
     res.status(201).json(store);
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -716,7 +757,7 @@ app.post('/api/finance/stores', async (req, res) => {
 
 app.put('/api/finance/stores/:id', async (req, res) => {
   try {
-    res.json(await finance.updateStore(req.params.id, req.body.name));
+    res.json(await finance.updateStore(req.params.id, req.body));
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -1013,13 +1054,22 @@ app.get('/api/chat/threads', async (_req, res) => {
 app.get('/api/chat/:captainId', async (req, res) => {
   const rows = await queryAll(
     `SELECT id, captain_id, sender_type, sender_id, sender_name, message,
-            attachment_path, attachment_name, attachment_mime, created_at
+            attachment_path, attachment_name, attachment_mime, created_at,
+            read_by_platform_at, read_by_captain_at
      FROM chat_messages
      WHERE captain_id = ?
      ORDER BY created_at ASC`,
     [req.params.captainId]
   );
   res.json(rows);
+});
+
+app.post('/api/chat/:captainId/read', async (req, res) => {
+  try {
+    res.json(await chat.markChatReadByPlatform(req.params.captainId));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 app.post('/api/chat/:captainId', upload.single('attachment'), async (req, res) => {
@@ -1057,13 +1107,22 @@ app.post('/api/chat/:captainId', upload.single('attachment'), async (req, res) =
 app.get('/api/captain/chat/:captainId', async (req, res) => {
   const rows = await queryAll(
     `SELECT id, captain_id, sender_type, sender_id, sender_name, message,
-            attachment_path, attachment_name, attachment_mime, created_at
+            attachment_path, attachment_name, attachment_mime, created_at,
+            read_by_platform_at, read_by_captain_at
      FROM chat_messages
      WHERE captain_id = ?
      ORDER BY created_at ASC`,
     [req.params.captainId]
   );
   res.json(rows);
+});
+
+app.post('/api/captain/chat/:captainId/read', async (req, res) => {
+  try {
+    res.json(await chat.markChatReadByCaptain(req.params.captainId));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 app.post('/api/captain/chat/:captainId', upload.single('attachment'), async (req, res) => {

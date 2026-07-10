@@ -2,6 +2,7 @@ import { v4 as uuid } from 'uuid';
 import { yemenDateKey } from './attendance.service.js';
 import { execute, queryAll, queryOne, isMySQL } from './database.js';
 import { postCompletedOrderFinance, reconcileCaptainDayFinance } from './finance.service.js';
+import { itemStorePricing, summarizeOrderPricing } from './orderPricing.js';
 
 function num(v) {
   return Math.round((Number(v) || 0) * 100) / 100;
@@ -116,7 +117,7 @@ async function attachItems(orders) {
   if (!orders.length) return orders;
   const placeholders = orders.map(() => '?').join(', ');
   const rows = await queryAll(
-    `SELECT oi.*, s.name AS finance_store_name
+    `SELECT oi.*, s.name AS finance_store_name, s.discount_percent AS store_discount_percent
      FROM order_items oi
      LEFT JOIN finance_stores s ON s.id = oi.store_id
      WHERE oi.order_id IN (${placeholders})
@@ -126,13 +127,22 @@ async function attachItems(orders) {
   const map = new Map();
   for (const row of rows) {
     const current = map.get(row.order_id) || [];
+    const isExternal = Boolean(row.is_external);
+    const pricing = itemStorePricing(
+      row.invoice_amount,
+      isExternal,
+      isExternal ? 0 : row.store_discount_percent
+    );
     current.push({
       id: row.id,
       store_id: row.store_id,
-      store_name: row.is_external ? EXTERNAL_STORE_NAME : (row.finance_store_name || row.store_name || 'بدون محل'),
+      store_name: isExternal ? EXTERNAL_STORE_NAME : (row.finance_store_name || row.store_name || 'بدون محل'),
       details: row.details || '',
       invoice_amount: num(row.invoice_amount),
-      is_external: Boolean(row.is_external),
+      is_external: isExternal,
+      store_discount_percent: pricing.discount_percent,
+      discount_amount: pricing.discount_amount,
+      net_invoice_amount: pricing.net,
     });
     map.set(row.order_id, current);
   }
@@ -157,22 +167,12 @@ async function attachItems(orders) {
   }
   return orders.map((order) => {
     const items = map.get(order.id) || [];
-    const invoice_total = items.reduce(
-      (sum, item) => sum + (item.is_external ? 0 : num(item.invoice_amount)),
-      0
-    );
-    const external_total = items.reduce(
-      (sum, item) => sum + (item.is_external ? num(item.invoice_amount) : 0),
-      0
-    );
-    const delivery_fee = num(order.delivery_fee);
+    const pricing = summarizeOrderPricing(items, order.delivery_fee);
     return {
       ...order,
       items,
       invoice_attachments: attachmentMap.get(order.id) || [],
-      invoice_total,
-      external_total,
-      grand_total: num(invoice_total + external_total + delivery_fee),
+      ...pricing,
     };
   });
 }

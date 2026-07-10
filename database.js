@@ -115,6 +115,7 @@ const SCHEMA_SQLITE = `
   CREATE TABLE IF NOT EXISTS finance_stores (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
+    discount_percent REAL NOT NULL DEFAULT 0,
     is_active INTEGER DEFAULT 1,
     created_at TEXT DEFAULT (datetime('now'))
   );
@@ -388,6 +389,7 @@ export async function migrateFinanceTables() {
       CREATE TABLE IF NOT EXISTS finance_stores (
         id VARCHAR(36) PRIMARY KEY,
         name VARCHAR(255) NOT NULL,
+        discount_percent DECIMAL(5,2) NOT NULL DEFAULT 0,
         is_active TINYINT DEFAULT 1,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
@@ -1238,11 +1240,48 @@ export async function migrateChatMessagesTable() {
   }
 }
 
+export async function migrateFinanceStoreDiscountColumn() {
+  if (isMySQL) {
+    const cols = await queryAll("SHOW COLUMNS FROM finance_stores LIKE 'discount_percent'");
+    if (!cols.length) {
+      await execute('ALTER TABLE finance_stores ADD COLUMN discount_percent DECIMAL(5,2) NOT NULL DEFAULT 0');
+    }
+  } else {
+    const existing = sqlite.prepare('PRAGMA table_info(finance_stores)').all();
+    if (!existing.some((c) => c.name === 'discount_percent')) {
+      sqlite.exec('ALTER TABLE finance_stores ADD COLUMN discount_percent REAL NOT NULL DEFAULT 0');
+    }
+  }
+}
+
 export async function migrateChatMessageAttachmentColumns() {
   const columns = [
     { name: 'attachment_path', mysql: 'VARCHAR(1000) NULL', sqlite: 'TEXT' },
     { name: 'attachment_name', mysql: 'VARCHAR(255) NULL', sqlite: 'TEXT' },
     { name: 'attachment_mime', mysql: 'VARCHAR(100) NULL', sqlite: 'TEXT' },
+  ];
+
+  if (isMySQL) {
+    for (const col of columns) {
+      const exists = await queryAll(`SHOW COLUMNS FROM chat_messages LIKE '${col.name}'`);
+      if (!exists.length) {
+        await execute(`ALTER TABLE chat_messages ADD COLUMN ${col.name} ${col.mysql}`);
+      }
+    }
+  } else {
+    const existing = sqlite.prepare('PRAGMA table_info(chat_messages)').all();
+    for (const col of columns) {
+      if (!existing.some((c) => c.name === col.name)) {
+        sqlite.exec(`ALTER TABLE chat_messages ADD COLUMN ${col.name} ${col.sqlite}`);
+      }
+    }
+  }
+}
+
+export async function migrateChatMessageReadColumns() {
+  const columns = [
+    { name: 'read_by_platform_at', mysql: 'TIMESTAMP NULL', sqlite: 'TEXT' },
+    { name: 'read_by_captain_at', mysql: 'TIMESTAMP NULL', sqlite: 'TEXT' },
   ];
 
   if (isMySQL) {
