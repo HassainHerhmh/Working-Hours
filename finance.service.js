@@ -371,7 +371,7 @@ export async function getCaptainBalancesMap() {
   return balances;
 }
 
-export async function getCaptainFinance(captainId, { period, date, sales_date } = {}) {
+export async function getCaptainFinance(captainId, { period, date, from, to, sales_date } = {}) {
   const captain = await queryOne('SELECT id, name, captain_number FROM captains WHERE id = ?', [captainId]);
   if (!captain) throw new Error('الكابتن غير موجود');
 
@@ -381,7 +381,9 @@ export async function getCaptainFinance(captainId, { period, date, sales_date } 
   const normalizedSalesDate = sales_date ? normalizeSalesDate(sales_date) : null;
 
   let range = null;
-  if (period && ['day', 'week', 'month'].includes(period)) {
+  if (period === 'range' && from && to) {
+    range = getReportRange('range', date, from, to);
+  } else if (period && ['day', 'week', 'month'].includes(period)) {
     range = getDateRange(period, date);
   }
 
