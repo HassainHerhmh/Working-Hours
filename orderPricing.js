@@ -16,14 +16,14 @@ export function normalizeDateKey(value) {
   return d.toISOString().slice(0, 10);
 }
 
-export function resolveStoreDiscountPercent(discountPercent, discountFromDate, orderDate) {
+export function resolveStoreDiscountPercent(discountPercent, discountDate, orderDate) {
   const pct = normalizeDiscountPercent(discountPercent);
   if (pct <= 0) return 0;
-  const fromDate = normalizeDateKey(discountFromDate);
-  if (!fromDate) return 0;
+  const targetDate = normalizeDateKey(discountDate);
+  if (!targetDate) return 0;
   const orderKey = normalizeDateKey(orderDate);
   if (!orderKey) return 0;
-  return orderKey >= fromDate ? pct : 0;
+  return orderKey === targetDate ? pct : 0;
 }
 
 export function itemStorePricing(invoiceAmount, isExternal, discountPercent = 0) {

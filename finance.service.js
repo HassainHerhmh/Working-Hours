@@ -201,7 +201,7 @@ export async function createStore(name, discount_percent = 0, discount_from_date
     ? normalizeSalesDate(discount_from_date)
     : null;
   if (discount > 0 && !fromDate) {
-    throw new Error('تاريخ بدء الخصم مطلوب عند تفعيل الخصم');
+    throw new Error('تاريخ الخصم مطلوب عند تفعيل الخصم');
   }
   await execute(
     'INSERT INTO finance_stores (id, name, discount_percent, discount_from_date) VALUES (?, ?, ?, ?)',
@@ -228,7 +228,7 @@ export async function updateStore(id, payload = {}) {
   if (discount <= 0) {
     fromDate = null;
   } else if (!fromDate) {
-    throw new Error('تاريخ بدء الخصم مطلوب عند تفعيل الخصم');
+    throw new Error('تاريخ الخصم مطلوب عند تفعيل الخصم');
   }
 
   await execute(
