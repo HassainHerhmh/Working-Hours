@@ -910,34 +910,8 @@ export async function migrateFinanceInvoicePerDate() {
       }
     }
 
-    const uniqStoreDate = await queryAll(
-      'SHOW INDEX FROM captain_store_invoices WHERE Key_name = ?',
-      ['uniq_captain_store_date']
-    );
-    if (!uniqStoreDate.length) {
-      const storeIndexes = await queryAll(
-        'SHOW INDEX FROM captain_store_invoices WHERE Key_name = ?',
-        ['uniq_captain_store']
-      );
-      if (storeIndexes.length) {
-        await dropForeignKeys('captain_store_invoices', 'captain_id');
-        await dropForeignKeys('captain_store_invoices', 'store_id');
-        await execute('ALTER TABLE captain_store_invoices DROP INDEX uniq_captain_store');
-      }
-      await execute(
-        'ALTER TABLE captain_store_invoices ADD UNIQUE KEY uniq_captain_store_date (captain_id, store_id, sales_date)'
-      );
-      if (!(await foreignKeyExists('captain_store_invoices', 'captain_id'))) {
-        await execute(
-          'ALTER TABLE captain_store_invoices ADD CONSTRAINT fk_store_invoices_captain FOREIGN KEY (captain_id) REFERENCES captains(id) ON DELETE CASCADE'
-        );
-      }
-      if (!(await foreignKeyExists('captain_store_invoices', 'store_id'))) {
-        await execute(
-          'ALTER TABLE captain_store_invoices ADD CONSTRAINT fk_store_invoices_store FOREIGN KEY (store_id) REFERENCES finance_stores(id) ON DELETE CASCADE'
-        );
-      }
-    }
+    // Per-order invoice lines allow multiple rows per store/day — uniq_captain_store_date
+    // is removed in migrateCaptainStoreInvoiceOrderLines().
   } else {
     const postingIndexes = sqlite.prepare('PRAGMA index_list(finance_invoice_postings)').all();
     if (postingIndexes.some(i => i.unique)) {
@@ -961,27 +935,7 @@ export async function migrateFinanceInvoicePerDate() {
       `);
     }
 
-    const storeIndexes = sqlite.prepare('PRAGMA index_list(captain_store_invoices)').all();
-    if (storeIndexes.some(i => i.unique)) {
-      sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS captain_store_invoices_new (
-          id TEXT PRIMARY KEY,
-          captain_id TEXT NOT NULL REFERENCES captains(id) ON DELETE CASCADE,
-          store_id TEXT NOT NULL REFERENCES finance_stores(id) ON DELETE CASCADE,
-          amount REAL NOT NULL DEFAULT 0,
-          sales_date TEXT NOT NULL,
-          created_at TEXT DEFAULT (datetime('now')),
-          UNIQUE(captain_id, store_id, sales_date)
-        );
-        INSERT INTO captain_store_invoices_new (id, captain_id, store_id, amount, sales_date, created_at)
-        SELECT id, captain_id, store_id, amount,
-          COALESCE(NULLIF(sales_date, ''), '${today}'),
-          created_at
-        FROM captain_store_invoices;
-        DROP TABLE captain_store_invoices;
-        ALTER TABLE captain_store_invoices_new RENAME TO captain_store_invoices;
-      `);
-    }
+    // captain_store_invoices unique-per-store/day removed — see migrateCaptainStoreInvoiceOrderLines()
   }
 }
 
@@ -1336,7 +1290,11 @@ export async function migrateCaptainStoreInvoiceOrderLines() {
       'SHOW INDEX FROM captain_store_invoices WHERE Key_name = ?',
       ['uniq_captain_store_date']
     );
-    if (uniqStoreDate.length) {
+    const uniqStore = await queryAll(
+      'SHOW INDEX FROM captain_store_invoices WHERE Key_name = ?',
+      ['uniq_captain_store']
+    );
+    if (uniqStoreDate.length || uniqStore.length) {
       async function dropForeignKeys(table, column) {
         const fkRows = await queryAll(`
           SELECT CONSTRAINT_NAME
@@ -1352,7 +1310,12 @@ export async function migrateCaptainStoreInvoiceOrderLines() {
       }
       await dropForeignKeys('captain_store_invoices', 'captain_id');
       await dropForeignKeys('captain_store_invoices', 'store_id');
-      await execute('ALTER TABLE captain_store_invoices DROP INDEX uniq_captain_store_date');
+      if (uniqStoreDate.length) {
+        await execute('ALTER TABLE captain_store_invoices DROP INDEX uniq_captain_store_date');
+      }
+      if (uniqStore.length) {
+        await execute('ALTER TABLE captain_store_invoices DROP INDEX uniq_captain_store');
+      }
       if (!(await queryAll(`
         SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE
         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'captain_store_invoices'

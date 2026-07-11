@@ -315,8 +315,8 @@ async function seedIfEmpty() {
   await migrateFinanceInvoicePostingsTable();
   await migrateFinanceInvoiceOrdersCountColumn();
   await migrateFinanceInvoiceSalesDateColumn();
-  await migrateFinanceInvoicePerDate();
   await migrateCaptainStoreInvoiceOrderLines();
+  await migrateFinanceInvoicePerDate();
   await migrateFinanceCommissionPostingsTable();
   await migrateFinanceCommissionSalesDateColumn();
   await migrateFinanceCommissionPerDate();
