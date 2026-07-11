@@ -41,6 +41,7 @@ import {
   migrateUsersPermissionsColumn,
   migrateOrderInvoiceAttachmentsTable,
   migrateOrderInvoiceAttachmentDataColumn,
+  migrateStoredMediaColumns,
   migrateChatMessagesTable,
   migrateChatMessageAttachmentColumns,
   migrateFinanceStoreDiscountColumn,
@@ -94,6 +95,51 @@ function invoiceAttachmentPublicPath(id) {
   return `/api/attachments/invoices/${id}`;
 }
 
+function userPhotoPublicPath(id) {
+  return `/api/attachments/users/${id}`;
+}
+
+function captainPhotoPublicPath(id) {
+  return `/api/attachments/captains/${id}`;
+}
+
+function chatAttachmentPublicPath(id) {
+  return `/api/attachments/chat/${id}`;
+}
+
+function guessMimeFromPath(filePath) {
+  const ext = path.extname(String(filePath || '')).toLowerCase();
+  const map = {
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+    '.pdf': 'application/pdf',
+  };
+  return map[ext] || 'application/octet-stream';
+}
+
+function sendStoredFile(res, row, { dataKey, mimeKey, nameKey, pathKey }) {
+  const data = row?.[dataKey];
+  if (data) {
+    res.setHeader('Content-Type', row[mimeKey] || 'application/octet-stream');
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    const fileName = row[nameKey];
+    if (fileName) {
+      res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(fileName)}"`);
+    }
+    return res.send(data);
+  }
+
+  const rel = String(row?.[pathKey] || '').replace(/^\/+/, '');
+  const absPath = path.join(__dirname, rel);
+  if (fs.existsSync(absPath)) {
+    return res.sendFile(absPath);
+  }
+  return res.status(404).json({ error: 'الملف غير موجود' });
+}
+
 async function backfillOrderInvoiceAttachmentData() {
   const rows = await queryAll(
     'SELECT id, file_path FROM order_invoice_attachments WHERE file_data IS NULL'
@@ -110,6 +156,52 @@ async function backfillOrderInvoiceAttachmentData() {
       [file_data, invoiceAttachmentPublicPath(row.id), row.id]
     );
   }
+}
+
+async function backfillProfilePhotos(table, publicPathFn) {
+  const rows = await queryAll(
+    `SELECT id, photo FROM ${table} WHERE photo_data IS NULL AND photo IS NOT NULL AND photo != ''`
+  );
+  for (const row of rows) {
+    const currentPath = String(row.photo || '');
+    if (currentPath.startsWith('/api/attachments/')) continue;
+    const rel = currentPath.replace(/^\/+/, '');
+    const absPath = path.join(__dirname, rel);
+    if (!fs.existsSync(absPath)) continue;
+    const photo_data = fs.readFileSync(absPath);
+    await execute(
+      `UPDATE ${table} SET photo = ?, photo_data = ?, photo_mime = ? WHERE id = ?`,
+      [publicPathFn(row.id), photo_data, guessMimeFromPath(currentPath), row.id]
+    );
+  }
+}
+
+async function backfillChatAttachmentData() {
+  const rows = await queryAll(
+    `SELECT id, attachment_path, attachment_mime
+     FROM chat_messages
+     WHERE attachment_data IS NULL
+       AND attachment_path IS NOT NULL
+       AND attachment_path != ''`
+  );
+  for (const row of rows) {
+    const currentPath = String(row.attachment_path || '');
+    if (currentPath.startsWith('/api/attachments/chat/')) continue;
+    const rel = currentPath.replace(/^\/+/, '');
+    const absPath = path.join(__dirname, rel);
+    if (!fs.existsSync(absPath)) continue;
+    const attachment_data = fs.readFileSync(absPath);
+    await execute(
+      'UPDATE chat_messages SET attachment_data = ?, attachment_path = ? WHERE id = ?',
+      [attachment_data, chatAttachmentPublicPath(row.id), row.id]
+    );
+  }
+}
+
+async function backfillStoredMediaData() {
+  await backfillProfilePhotos('users', userPhotoPublicPath);
+  await backfillProfilePhotos('captains', captainPhotoPublicPath);
+  await backfillChatAttachmentData();
 }
 
 function requireGatewayAuth(req, res, next) {
@@ -176,17 +268,23 @@ function isUniqueError(e) {
 
 function sanitizeCaptain(captain) {
   if (!captain) return null;
-  const { password_hash, ...safe } = captain;
+  const { password_hash, photo_data, photo_mime, ...safe } = captain;
   return safe;
 }
 
 function sanitizeUser(user) {
   if (!user) return null;
-  const { password_hash, ...safe } = user;
+  const { password_hash, photo_data, photo_mime, ...safe } = user;
   return {
     ...safe,
     permissions: resolveUserPermissions(safe),
   };
+}
+
+function sanitizeChatMessage(message) {
+  if (!message) return null;
+  const { attachment_data, ...safe } = message;
+  return safe;
 }
 
 async function ensureCaptainPasswords() {
@@ -226,7 +324,9 @@ async function seedIfEmpty() {
   await migrateUsersPermissionsColumn();
   await migrateOrderInvoiceAttachmentsTable();
   await migrateOrderInvoiceAttachmentDataColumn();
+  await migrateStoredMediaColumns();
   await backfillOrderInvoiceAttachmentData();
+  await backfillStoredMediaData();
   await migrateChatMessagesTable();
   await migrateChatMessageAttachmentColumns();
   await migrateFinanceStoreDiscountColumn();
@@ -279,13 +379,20 @@ app.post('/api/users', upload.single('photo'), async (req, res) => {
     return res.status(400).json({ error: 'الاسم وكلمة المرور مطلوبة' });
   }
   const id = uuid();
-  const photo = req.file ? `/uploads/${req.file.filename}` : '';
   const hash = bcrypt.hashSync(password, 10);
+  let photo = '';
+  let photo_data = null;
+  let photo_mime = null;
+  if (req.file) {
+    photo_data = readUploadedFileBuffer(req.file);
+    photo = userPhotoPublicPath(id);
+    photo_mime = req.file.mimetype || guessMimeFromPath(req.file.originalname);
+  }
   try {
     await execute(`
-      INSERT INTO users (id, name, email, phone, role, photo, password_hash)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `, [id, name, email || null, phone || null, role || 'employee', photo, hash]);
+      INSERT INTO users (id, name, email, phone, role, photo, photo_data, photo_mime, password_hash)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [id, name, email || null, phone || null, role || 'employee', photo, photo_data, photo_mime, hash]);
     res.status(201).json(sanitizeUser(await queryOne('SELECT * FROM users WHERE id = ?', [id])));
   } catch (e) {
     if (isUniqueError(e)) {
@@ -300,12 +407,19 @@ app.put('/api/users/:id', upload.single('photo'), async (req, res) => {
   if (!existing) return res.status(404).json({ error: 'المستخدم غير موجود' });
 
   const { name, email, phone, role, status, password } = req.body;
-  const photo = req.file ? `/uploads/${req.file.filename}` : existing.photo;
+  let photo = existing.photo;
+  let photo_data = existing.photo_data ?? null;
+  let photo_mime = existing.photo_mime ?? null;
+  if (req.file) {
+    photo_data = readUploadedFileBuffer(req.file);
+    photo = userPhotoPublicPath(existing.id);
+    photo_mime = req.file.mimetype || guessMimeFromPath(req.file.originalname);
+  }
   const hash = password ? bcrypt.hashSync(password, 10) : existing.password_hash;
 
   try {
     await execute(`
-      UPDATE users SET name = ?, email = ?, phone = ?, role = ?, status = ?, photo = ?, password_hash = ?
+      UPDATE users SET name = ?, email = ?, phone = ?, role = ?, status = ?, photo = ?, photo_data = ?, photo_mime = ?, password_hash = ?
       WHERE id = ?
     `, [
       name ?? existing.name,
@@ -314,6 +428,8 @@ app.put('/api/users/:id', upload.single('photo'), async (req, res) => {
       role ?? existing.role,
       status ?? existing.status,
       photo,
+      photo_data,
+      photo_mime,
       hash,
       req.params.id
     ]);
@@ -391,13 +507,20 @@ app.post('/api/captains', upload.single('photo'), async (req, res) => {
     return res.status(400).json({ error: 'الاسم والهاتف ورقم الكابتن واسم المستخدم مطلوبة' });
   }
   const id = uuid();
-  const photo = req.file ? `/uploads/${req.file.filename}` : '';
   const hash = bcrypt.hashSync(password || '123456', 10);
   const normalizedUsername = String(username).trim().toLowerCase();
+  let photo = '';
+  let photo_data = null;
+  let photo_mime = null;
+  if (req.file) {
+    photo_data = readUploadedFileBuffer(req.file);
+    photo = captainPhotoPublicPath(id);
+    photo_mime = req.file.mimetype || guessMimeFromPath(req.file.originalname);
+  }
   try {
     await execute(
-      'INSERT INTO captains (id, name, phone, captain_number, username, photo, password_hash) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [id, name, phone, captain_number, normalizedUsername, photo, hash]
+      'INSERT INTO captains (id, name, phone, captain_number, username, photo, photo_data, photo_mime, password_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [id, name, phone, captain_number, normalizedUsername, photo, photo_data, photo_mime, hash]
     );
     res.status(201).json(sanitizeCaptain(await queryOne('SELECT * FROM captains WHERE id = ?', [id])));
   } catch (e) {
@@ -413,7 +536,14 @@ app.put('/api/captains/:id', upload.single('photo'), async (req, res) => {
   if (!existing) return res.status(404).json({ error: 'الكابتن غير موجود' });
 
   const { name, phone, captain_number, username, password } = req.body;
-  const photo = req.file ? `/uploads/${req.file.filename}` : existing.photo;
+  let photo = existing.photo;
+  let photo_data = existing.photo_data ?? null;
+  let photo_mime = existing.photo_mime ?? null;
+  if (req.file) {
+    photo_data = readUploadedFileBuffer(req.file);
+    photo = captainPhotoPublicPath(existing.id);
+    photo_mime = req.file.mimetype || guessMimeFromPath(req.file.originalname);
+  }
   const hash = password ? bcrypt.hashSync(password, 10) : existing.password_hash;
   const normalizedUsername = username
     ? String(username).trim().toLowerCase()
@@ -421,13 +551,15 @@ app.put('/api/captains/:id', upload.single('photo'), async (req, res) => {
 
   try {
     await execute(
-      'UPDATE captains SET name = ?, phone = ?, captain_number = ?, username = ?, photo = ?, password_hash = ? WHERE id = ?',
+      'UPDATE captains SET name = ?, phone = ?, captain_number = ?, username = ?, photo = ?, photo_data = ?, photo_mime = ?, password_hash = ? WHERE id = ?',
       [
         name || existing.name,
         phone || existing.phone,
         captain_number || existing.captain_number,
         normalizedUsername,
         photo,
+        photo_data,
+        photo_mime,
         hash,
         req.params.id
       ]
@@ -1003,22 +1135,66 @@ app.get('/api/attachments/invoices/:id', async (req, res) => {
       [req.params.id]
     );
     if (!row) return res.status(404).json({ error: 'المرفق غير موجود' });
+    return sendStoredFile(res, row, {
+      dataKey: 'file_data',
+      mimeKey: 'mime_type',
+      nameKey: 'file_name',
+      pathKey: 'file_path',
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
-    if (row.file_data) {
-      res.setHeader('Content-Type', row.mime_type || 'application/octet-stream');
-      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-      if (row.file_name) {
-        res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(row.file_name)}"`);
-      }
-      return res.send(row.file_data);
-    }
+app.get('/api/attachments/users/:id', async (req, res) => {
+  try {
+    const row = await queryOne(
+      'SELECT photo AS file_path, photo_data AS file_data, photo_mime AS mime_type FROM users WHERE id = ?',
+      [req.params.id]
+    );
+    if (!row?.file_data && !row?.file_path) return res.status(404).json({ error: 'الصورة غير موجودة' });
+    return sendStoredFile(res, row, {
+      dataKey: 'file_data',
+      mimeKey: 'mime_type',
+      pathKey: 'file_path',
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
-    const rel = String(row.file_path || '').replace(/^\/+/, '');
-    const absPath = path.join(__dirname, rel);
-    if (fs.existsSync(absPath)) {
-      return res.sendFile(absPath);
-    }
-    return res.status(404).json({ error: 'الملف غير موجود' });
+app.get('/api/attachments/captains/:id', async (req, res) => {
+  try {
+    const row = await queryOne(
+      'SELECT photo AS file_path, photo_data AS file_data, photo_mime AS mime_type FROM captains WHERE id = ?',
+      [req.params.id]
+    );
+    if (!row?.file_data && !row?.file_path) return res.status(404).json({ error: 'الصورة غير موجودة' });
+    return sendStoredFile(res, row, {
+      dataKey: 'file_data',
+      mimeKey: 'mime_type',
+      pathKey: 'file_path',
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/attachments/chat/:id', async (req, res) => {
+  try {
+    const row = await queryOne(
+      `SELECT attachment_path AS file_path, attachment_name AS file_name,
+              attachment_mime AS mime_type, attachment_data AS file_data
+       FROM chat_messages WHERE id = ?`,
+      [req.params.id]
+    );
+    if (!row) return res.status(404).json({ error: 'المرفق غير موجود' });
+    return sendStoredFile(res, row, {
+      dataKey: 'file_data',
+      mimeKey: 'mime_type',
+      nameKey: 'file_name',
+      pathKey: 'file_path',
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1140,7 +1316,7 @@ app.get('/api/chat/:captainId', async (req, res) => {
      ORDER BY created_at ASC`,
     [req.params.captainId]
   );
-  res.json(rows);
+  res.json(rows.map(sanitizeChatMessage));
 });
 
 app.post('/api/chat/:captainId/read', async (req, res) => {
@@ -1160,11 +1336,12 @@ app.post('/api/chat/:captainId', upload.single('attachment'), async (req, res) =
     if (!captain) return res.status(404).json({ error: 'الكابتن غير موجود' });
 
     const id = uuid();
+    const attachment_data = hasFile ? readUploadedFileBuffer(req.file) : null;
     await execute(
       `INSERT INTO chat_messages (
         id, captain_id, sender_type, sender_id, sender_name, message,
-        attachment_path, attachment_name, attachment_mime
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        attachment_path, attachment_name, attachment_mime, attachment_data
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         req.params.captainId,
@@ -1172,12 +1349,13 @@ app.post('/api/chat/:captainId', upload.single('attachment'), async (req, res) =
         req.body?.sender_id || null,
         req.body?.sender_name || 'المنصة',
         message,
-        hasFile ? `/uploads/${req.file.filename}` : null,
+        hasFile ? chatAttachmentPublicPath(id) : null,
         hasFile ? (req.file.originalname || req.file.filename) : null,
         hasFile ? (req.file.mimetype || '') : null,
+        attachment_data,
       ]
     );
-    res.status(201).json(await queryOne('SELECT * FROM chat_messages WHERE id = ?', [id]));
+    res.status(201).json(sanitizeChatMessage(await queryOne('SELECT * FROM chat_messages WHERE id = ?', [id])));
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -1193,7 +1371,7 @@ app.get('/api/captain/chat/:captainId', async (req, res) => {
      ORDER BY created_at ASC`,
     [req.params.captainId]
   );
-  res.json(rows);
+  res.json(rows.map(sanitizeChatMessage));
 });
 
 app.post('/api/captain/chat/:captainId/read', async (req, res) => {
@@ -1213,11 +1391,12 @@ app.post('/api/captain/chat/:captainId', upload.single('attachment'), async (req
     if (!captain) return res.status(404).json({ error: 'الكابتن غير موجود' });
 
     const id = uuid();
+    const attachment_data = hasFile ? readUploadedFileBuffer(req.file) : null;
     await execute(
       `INSERT INTO chat_messages (
         id, captain_id, sender_type, sender_id, sender_name, message,
-        attachment_path, attachment_name, attachment_mime
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        attachment_path, attachment_name, attachment_mime, attachment_data
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         req.params.captainId,
@@ -1225,12 +1404,13 @@ app.post('/api/captain/chat/:captainId', upload.single('attachment'), async (req
         req.params.captainId,
         captain.name || 'الكابتن',
         message,
-        hasFile ? `/uploads/${req.file.filename}` : null,
+        hasFile ? chatAttachmentPublicPath(id) : null,
         hasFile ? (req.file.originalname || req.file.filename) : null,
         hasFile ? (req.file.mimetype || '') : null,
+        attachment_data,
       ]
     );
-    res.status(201).json(await queryOne('SELECT * FROM chat_messages WHERE id = ?', [id]));
+    res.status(201).json(sanitizeChatMessage(await queryOne('SELECT * FROM chat_messages WHERE id = ?', [id])));
   } catch (err) {
     res.status(400).json({ error: err.message });
   }

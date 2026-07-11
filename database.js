@@ -1326,6 +1326,36 @@ export async function migrateOrderInvoiceAttachmentDataColumn() {
   }
 }
 
+async function ensureTableColumns(table, columns) {
+  if (isMySQL) {
+    for (const col of columns) {
+      const exists = await queryAll(`SHOW COLUMNS FROM ${table} LIKE '${col.name}'`);
+      if (!exists.length) {
+        await execute(`ALTER TABLE ${table} ADD COLUMN ${col.name} ${col.mysql}`);
+      }
+    }
+    return;
+  }
+  const existing = sqlite.prepare(`PRAGMA table_info(${table})`).all();
+  for (const col of columns) {
+    if (!existing.some((c) => c.name === col.name)) {
+      sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${col.name} ${col.sqlite}`);
+    }
+  }
+}
+
+export async function migrateStoredMediaColumns() {
+  const photoColumns = [
+    { name: 'photo_data', mysql: 'LONGBLOB NULL', sqlite: 'BLOB' },
+    { name: 'photo_mime', mysql: 'VARCHAR(100) NULL', sqlite: 'TEXT' },
+  ];
+  await ensureTableColumns('users', photoColumns);
+  await ensureTableColumns('captains', photoColumns);
+  await ensureTableColumns('chat_messages', [
+    { name: 'attachment_data', mysql: 'LONGBLOB NULL', sqlite: 'BLOB' },
+  ]);
+}
+
 export function getDbType() {
   return isMySQL ? 'mysql' : 'sqlite';
 }
