@@ -40,6 +40,7 @@ import {
   migrateFixTransferVoucherTypes,
   migrateUsersPermissionsColumn,
   migrateOrderInvoiceAttachmentsTable,
+  migrateOrderInvoiceAttachmentDataColumn,
   migrateChatMessagesTable,
   migrateChatMessageAttachmentColumns,
   migrateFinanceStoreDiscountColumn,
@@ -75,6 +76,41 @@ const storage = multer.diskStorage({
   filename: (_, file, cb) => cb(null, `${uuid()}${path.extname(file.originalname)}`)
 });
 const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 } });
+
+function readUploadedFileBuffer(file) {
+  if (!file?.path) return null;
+  try {
+    return fs.readFileSync(file.path);
+  } finally {
+    try {
+      fs.unlinkSync(file.path);
+    } catch {
+      // ignore temp file cleanup errors
+    }
+  }
+}
+
+function invoiceAttachmentPublicPath(id) {
+  return `/api/attachments/invoices/${id}`;
+}
+
+async function backfillOrderInvoiceAttachmentData() {
+  const rows = await queryAll(
+    'SELECT id, file_path FROM order_invoice_attachments WHERE file_data IS NULL'
+  );
+  for (const row of rows) {
+    const currentPath = String(row.file_path || '');
+    if (currentPath.startsWith('/api/attachments/invoices/')) continue;
+    const rel = currentPath.replace(/^\/+/, '');
+    const absPath = path.join(__dirname, rel);
+    if (!fs.existsSync(absPath)) continue;
+    const file_data = fs.readFileSync(absPath);
+    await execute(
+      'UPDATE order_invoice_attachments SET file_data = ?, file_path = ? WHERE id = ?',
+      [file_data, invoiceAttachmentPublicPath(row.id), row.id]
+    );
+  }
+}
 
 function requireGatewayAuth(req, res, next) {
   const auth = req.headers.authorization || '';
@@ -189,6 +225,8 @@ async function seedIfEmpty() {
   await migrateFixTransferVoucherTypes();
   await migrateUsersPermissionsColumn();
   await migrateOrderInvoiceAttachmentsTable();
+  await migrateOrderInvoiceAttachmentDataColumn();
+  await backfillOrderInvoiceAttachmentData();
   await migrateChatMessagesTable();
   await migrateChatMessageAttachmentColumns();
   await migrateFinanceStoreDiscountColumn();
@@ -958,6 +996,34 @@ app.put('/api/captain/orders/:captainId/:orderId/items', async (req, res) => {
   }
 });
 
+app.get('/api/attachments/invoices/:id', async (req, res) => {
+  try {
+    const row = await queryOne(
+      'SELECT file_path, file_name, mime_type, file_data FROM order_invoice_attachments WHERE id = ?',
+      [req.params.id]
+    );
+    if (!row) return res.status(404).json({ error: 'المرفق غير موجود' });
+
+    if (row.file_data) {
+      res.setHeader('Content-Type', row.mime_type || 'application/octet-stream');
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      if (row.file_name) {
+        res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(row.file_name)}"`);
+      }
+      return res.send(row.file_data);
+    }
+
+    const rel = String(row.file_path || '').replace(/^\/+/, '');
+    const absPath = path.join(__dirname, rel);
+    if (fs.existsSync(absPath)) {
+      return res.sendFile(absPath);
+    }
+    return res.status(404).json({ error: 'الملف غير موجود' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/orders/:orderId/invoices', async (req, res) => {
   const rows = await queryAll(
     `SELECT a.*, c.name AS captain_name
@@ -983,16 +1049,20 @@ app.post('/api/captain/orders/:captainId/:orderId/invoices', upload.single('invo
     if (!req.file) return res.status(400).json({ error: 'ملف الفاتورة مطلوب' });
 
     const id = uuid();
+    const fileBuffer = readUploadedFileBuffer(req.file);
+    if (!fileBuffer?.length) return res.status(400).json({ error: 'تعذر قراءة ملف الفاتورة' });
+
     await execute(
-      `INSERT INTO order_invoice_attachments (id, order_id, captain_id, file_path, file_name, mime_type)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO order_invoice_attachments (id, order_id, captain_id, file_path, file_name, mime_type, file_data)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         req.params.orderId,
         req.params.captainId,
-        `/uploads/${req.file.filename}`,
+        invoiceAttachmentPublicPath(id),
         req.file.originalname || req.file.filename,
         req.file.mimetype || '',
+        fileBuffer,
       ]
     );
     res.status(201).json(await queryOne('SELECT * FROM order_invoice_attachments WHERE id = ?', [id]));
@@ -1009,8 +1079,11 @@ app.delete('/api/captain/orders/:captainId/:orderId/invoices/:invoiceId', async 
   );
   if (!row) return res.status(404).json({ error: 'المرفق غير موجود' });
   try {
-    const absPath = path.join(__dirname, String(row.file_path || '').replace(/^\/+/, ''));
-    if (fs.existsSync(absPath)) fs.unlinkSync(absPath);
+    const rel = String(row.file_path || '').replace(/^\/+/, '');
+    if (rel.startsWith('uploads/')) {
+      const absPath = path.join(__dirname, rel);
+      if (fs.existsSync(absPath)) fs.unlinkSync(absPath);
+    }
   } catch {
     // ignore file delete errors
   }

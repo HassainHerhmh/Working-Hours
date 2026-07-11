@@ -1187,6 +1187,7 @@ export async function migrateOrderInvoiceAttachmentsTable() {
         file_path VARCHAR(1000) NOT NULL,
         file_name VARCHAR(255) DEFAULT '',
         mime_type VARCHAR(100) DEFAULT '',
+        file_data LONGBLOB NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
         FOREIGN KEY (captain_id) REFERENCES captains(id) ON DELETE CASCADE
@@ -1201,6 +1202,7 @@ export async function migrateOrderInvoiceAttachmentsTable() {
         file_path TEXT NOT NULL,
         file_name TEXT DEFAULT '',
         mime_type TEXT DEFAULT '',
+        file_data BLOB,
         created_at TEXT DEFAULT (datetime('now'))
       )
     `);
@@ -1306,6 +1308,20 @@ export async function migrateChatMessageReadColumns() {
       if (!existing.some((c) => c.name === col.name)) {
         sqlite.exec(`ALTER TABLE chat_messages ADD COLUMN ${col.name} ${col.sqlite}`);
       }
+    }
+  }
+}
+
+export async function migrateOrderInvoiceAttachmentDataColumn() {
+  if (isMySQL) {
+    const cols = await queryAll("SHOW COLUMNS FROM order_invoice_attachments LIKE 'file_data'");
+    if (!cols.length) {
+      await execute('ALTER TABLE order_invoice_attachments ADD COLUMN file_data LONGBLOB NULL');
+    }
+  } else {
+    const existing = sqlite.prepare('PRAGMA table_info(order_invoice_attachments)').all();
+    if (!existing.some((c) => c.name === 'file_data')) {
+      sqlite.exec('ALTER TABLE order_invoice_attachments ADD COLUMN file_data BLOB');
     }
   }
 }
