@@ -1,7 +1,7 @@
 import { v4 as uuid } from 'uuid';
 import { queryAll, queryOne, execute, isMySQL } from './database.js';
 import { getDateRange, yemenDateKey } from './attendance.service.js';
-import { itemStorePricing, summarizeOrderPricing, orderTransfersDebtsAmount as pricingTransfersDebts, num as pricingNum } from './orderPricing.js';
+import { itemStorePricing, summarizeOrderPricing, orderTransfersDebtsAmount as pricingTransfersDebts, num as pricingNum, resolveStoreDiscountPercent } from './orderPricing.js';
 
 function num(v) {
   return Math.round((Number(v) || 0) * 100) / 100;
@@ -192,14 +192,20 @@ export async function listStores() {
   return queryAll('SELECT * FROM finance_stores ORDER BY name');
 }
 
-export async function createStore(name, discount_percent = 0) {
+export async function createStore(name, discount_percent = 0, discount_from_date = null) {
   const trimmed = String(name || '').trim();
   if (!trimmed) throw new Error('اسم المحل مطلوب');
   const id = uuid();
   const discount = pricingNum(discount_percent);
+  const fromDate = discount > 0 && discount_from_date
+    ? normalizeSalesDate(discount_from_date)
+    : null;
+  if (discount > 0 && !fromDate) {
+    throw new Error('تاريخ بدء الخصم مطلوب عند تفعيل الخصم');
+  }
   await execute(
-    'INSERT INTO finance_stores (id, name, discount_percent) VALUES (?, ?, ?)',
-    [id, trimmed, discount]
+    'INSERT INTO finance_stores (id, name, discount_percent, discount_from_date) VALUES (?, ?, ?, ?)',
+    [id, trimmed, discount, fromDate]
   );
   return queryOne('SELECT * FROM finance_stores WHERE id = ?', [id]);
 }
@@ -215,9 +221,19 @@ export async function updateStore(id, payload = {}) {
     ? pricingNum(payload.discount_percent)
     : pricingNum(existing.discount_percent);
 
+  let fromDate = payload.discount_from_date !== undefined
+    ? (payload.discount_from_date ? normalizeSalesDate(payload.discount_from_date) : null)
+    : (existing.discount_from_date || null);
+
+  if (discount <= 0) {
+    fromDate = null;
+  } else if (!fromDate) {
+    throw new Error('تاريخ بدء الخصم مطلوب عند تفعيل الخصم');
+  }
+
   await execute(
-    'UPDATE finance_stores SET name = ?, discount_percent = ? WHERE id = ?',
-    [trimmed, discount, id]
+    'UPDATE finance_stores SET name = ?, discount_percent = ?, discount_from_date = ? WHERE id = ?',
+    [trimmed, discount, fromDate, id]
   );
   return queryOne('SELECT * FROM finance_stores WHERE id = ?', [id]);
 }
@@ -513,7 +529,9 @@ function orderTransfersDebtsAmount(order, invoiceTotal = null, externalTotal = n
 async function getPostedOrderItemsForCaptain(captainId) {
   return queryAll(
     `SELECT oi.order_id, oi.store_id, oi.store_name, oi.invoice_amount, oi.is_external,
-      s.discount_percent AS store_discount_percent, o.payment_type, o.delivery_fee, o.done_at, o.updated_at
+      s.discount_percent AS store_discount_percent,
+      s.discount_from_date AS store_discount_from_date,
+      o.payment_type, o.delivery_fee, o.done_at, o.updated_at
      FROM order_items oi
      INNER JOIN \`orders\` o ON o.id = oi.order_id
      LEFT JOIN finance_stores s ON s.id = oi.store_id
@@ -528,7 +546,11 @@ function summarizePostedOrder(order, items) {
     store_name: row.store_name,
     invoice_amount: pricingNum(row.invoice_amount),
     is_external: Boolean(row.is_external),
-    store_discount_percent: row.store_discount_percent,
+    store_discount_percent: resolveStoreDiscountPercent(
+      row.store_discount_percent,
+      row.store_discount_from_date,
+      row.done_at || row.updated_at
+    ),
   }));
   return summarizeOrderPricing(orderItems, order.delivery_fee);
 }
@@ -570,7 +592,9 @@ async function computeTransfersDebtsFromOrders(captainId, salesDate) {
 async function computeStoreAmountsFromOrders(captainId, salesDate) {
   const rows = await queryAll(
     `SELECT oi.order_id, oi.store_id, oi.invoice_amount, oi.is_external,
-      s.discount_percent AS store_discount_percent, o.done_at, o.updated_at
+      s.discount_percent AS store_discount_percent,
+      s.discount_from_date AS store_discount_from_date,
+      o.done_at, o.updated_at
      FROM order_items oi
      INNER JOIN \`orders\` o ON o.id = oi.order_id
      LEFT JOIN finance_stores s ON s.id = oi.store_id
@@ -583,7 +607,15 @@ async function computeStoreAmountsFromOrders(captainId, salesDate) {
   for (const row of rows) {
     const orderDate = toDateKey(row.done_at || row.updated_at);
     if (orderDate !== salesDate) continue;
-    const pricing = itemStorePricing(row.invoice_amount, false, row.store_discount_percent);
+    const pricing = itemStorePricing(
+      row.invoice_amount,
+      false,
+      resolveStoreDiscountPercent(
+        row.store_discount_percent,
+        row.store_discount_from_date,
+        row.done_at || row.updated_at
+      )
+    );
     if (pricing.net <= 0) continue;
     amounts.set(row.store_id, num((amounts.get(row.store_id) || 0) + pricing.net));
   }

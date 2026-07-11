@@ -7,6 +7,25 @@ export function normalizeDiscountPercent(value) {
   return Math.min(100, Math.max(0, pct));
 }
 
+export function normalizeDateKey(value) {
+  if (!value) return null;
+  const raw = String(value).trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(raw)) return raw.slice(0, 10);
+  const d = new Date(raw.includes(' ') && !raw.includes('T') ? raw.replace(' ', 'T') : raw);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString().slice(0, 10);
+}
+
+export function resolveStoreDiscountPercent(discountPercent, discountFromDate, orderDate) {
+  const pct = normalizeDiscountPercent(discountPercent);
+  if (pct <= 0) return 0;
+  const fromDate = normalizeDateKey(discountFromDate);
+  if (!fromDate) return 0;
+  const orderKey = normalizeDateKey(orderDate);
+  if (!orderKey) return 0;
+  return orderKey >= fromDate ? pct : 0;
+}
+
 export function itemStorePricing(invoiceAmount, isExternal, discountPercent = 0) {
   const gross = num(invoiceAmount);
   if (isExternal) {

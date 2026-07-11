@@ -748,7 +748,7 @@ app.get('/api/finance/stores', async (_, res) => {
 
 app.post('/api/finance/stores', async (req, res) => {
   try {
-    const store = await finance.createStore(req.body.name, req.body.discount_percent);
+    const store = await finance.createStore(req.body.name, req.body.discount_percent, req.body.discount_from_date);
     res.status(201).json(store);
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -1044,7 +1044,13 @@ app.get('/api/chat/threads', async (_req, res) => {
         WHERE captain_id = c.id
         ORDER BY created_at DESC
         LIMIT 1
-      ) AS last_sender_type
+      ) AS last_sender_type,
+      (
+        SELECT COUNT(*) FROM chat_messages
+        WHERE captain_id = c.id
+          AND sender_type = 'captain'
+          AND read_by_platform_at IS NULL
+      ) AS unread_count
     FROM captains c
     ORDER BY last_message_at IS NULL, last_message_at DESC, c.name ASC
   `);

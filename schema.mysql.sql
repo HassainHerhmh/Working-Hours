@@ -116,6 +116,7 @@ CREATE TABLE IF NOT EXISTS finance_stores (
   id VARCHAR(36) PRIMARY KEY,
   name VARCHAR(255) NOT NULL,
   discount_percent DECIMAL(5,2) NOT NULL DEFAULT 0,
+  discount_from_date VARCHAR(10) NULL,
   is_active TINYINT DEFAULT 1,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

@@ -2,7 +2,7 @@ import { v4 as uuid } from 'uuid';
 import { yemenDateKey } from './attendance.service.js';
 import { execute, queryAll, queryOne, isMySQL } from './database.js';
 import { postCompletedOrderFinance, reconcileCaptainDayFinance } from './finance.service.js';
-import { itemStorePricing, summarizeOrderPricing } from './orderPricing.js';
+import { itemStorePricing, summarizeOrderPricing, resolveStoreDiscountPercent } from './orderPricing.js';
 
 function num(v) {
   return Math.round((Number(v) || 0) * 100) / 100;
@@ -117,9 +117,12 @@ async function attachItems(orders) {
   if (!orders.length) return orders;
   const placeholders = orders.map(() => '?').join(', ');
   const rows = await queryAll(
-    `SELECT oi.*, s.name AS finance_store_name, s.discount_percent AS store_discount_percent
+    `SELECT oi.*, s.name AS finance_store_name, s.discount_percent AS store_discount_percent,
+            s.discount_from_date AS store_discount_from_date,
+            o.done_at, o.updated_at, o.created_at
      FROM order_items oi
      LEFT JOIN finance_stores s ON s.id = oi.store_id
+     INNER JOIN \`orders\` o ON o.id = oi.order_id
      WHERE oi.order_id IN (${placeholders})
      ORDER BY oi.created_at ASC`,
     orders.map(o => o.id)
@@ -128,10 +131,16 @@ async function attachItems(orders) {
   for (const row of rows) {
     const current = map.get(row.order_id) || [];
     const isExternal = Boolean(row.is_external);
+    const orderDate = row.done_at || row.updated_at || row.created_at;
+    const effectiveDiscount = resolveStoreDiscountPercent(
+      row.store_discount_percent,
+      row.store_discount_from_date,
+      orderDate
+    );
     const pricing = itemStorePricing(
       row.invoice_amount,
       isExternal,
-      isExternal ? 0 : row.store_discount_percent
+      isExternal ? 0 : effectiveDiscount
     );
     current.push({
       id: row.id,

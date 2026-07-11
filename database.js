@@ -116,6 +116,7 @@ const SCHEMA_SQLITE = `
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     discount_percent REAL NOT NULL DEFAULT 0,
+    discount_from_date TEXT,
     is_active INTEGER DEFAULT 1,
     created_at TEXT DEFAULT (datetime('now'))
   );
@@ -390,6 +391,7 @@ export async function migrateFinanceTables() {
         id VARCHAR(36) PRIMARY KEY,
         name VARCHAR(255) NOT NULL,
         discount_percent DECIMAL(5,2) NOT NULL DEFAULT 0,
+        discount_from_date VARCHAR(10) NULL,
         is_active TINYINT DEFAULT 1,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
@@ -1246,10 +1248,17 @@ export async function migrateFinanceStoreDiscountColumn() {
     if (!cols.length) {
       await execute('ALTER TABLE finance_stores ADD COLUMN discount_percent DECIMAL(5,2) NOT NULL DEFAULT 0');
     }
+    const dateCols = await queryAll("SHOW COLUMNS FROM finance_stores LIKE 'discount_from_date'");
+    if (!dateCols.length) {
+      await execute('ALTER TABLE finance_stores ADD COLUMN discount_from_date VARCHAR(10) NULL');
+    }
   } else {
     const existing = sqlite.prepare('PRAGMA table_info(finance_stores)').all();
     if (!existing.some((c) => c.name === 'discount_percent')) {
       sqlite.exec('ALTER TABLE finance_stores ADD COLUMN discount_percent REAL NOT NULL DEFAULT 0');
+    }
+    if (!existing.some((c) => c.name === 'discount_from_date')) {
+      sqlite.exec('ALTER TABLE finance_stores ADD COLUMN discount_from_date TEXT');
     }
   }
 }
