@@ -32,6 +32,7 @@ import {
   migrateFinanceInvoiceOrdersCountColumn,
   migrateFinanceInvoiceSalesDateColumn,
   migrateFinanceInvoicePerDate,
+  migrateCaptainStoreInvoiceOrderLines,
   migrateFinanceCommissionPostingsTable,
   migrateFinanceCommissionSalesDateColumn,
   migrateFinanceCommissionPerDate,
@@ -315,6 +316,7 @@ async function seedIfEmpty() {
   await migrateFinanceInvoiceOrdersCountColumn();
   await migrateFinanceInvoiceSalesDateColumn();
   await migrateFinanceInvoicePerDate();
+  await migrateCaptainStoreInvoiceOrderLines();
   await migrateFinanceCommissionPostingsTable();
   await migrateFinanceCommissionSalesDateColumn();
   await migrateFinanceCommissionPerDate();

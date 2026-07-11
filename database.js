@@ -1326,6 +1326,87 @@ export async function migrateOrderInvoiceAttachmentDataColumn() {
   }
 }
 
+export async function migrateCaptainStoreInvoiceOrderLines() {
+  if (isMySQL) {
+    const orderCol = await queryAll("SHOW COLUMNS FROM captain_store_invoices LIKE 'order_id'");
+    if (!orderCol.length) {
+      await execute('ALTER TABLE captain_store_invoices ADD COLUMN order_id VARCHAR(36) NULL');
+    }
+    const uniqStoreDate = await queryAll(
+      'SHOW INDEX FROM captain_store_invoices WHERE Key_name = ?',
+      ['uniq_captain_store_date']
+    );
+    if (uniqStoreDate.length) {
+      async function dropForeignKeys(table, column) {
+        const fkRows = await queryAll(`
+          SELECT CONSTRAINT_NAME
+          FROM information_schema.KEY_COLUMN_USAGE
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME = ?
+            AND COLUMN_NAME = ?
+            AND REFERENCED_TABLE_NAME IS NOT NULL
+        `, [table, column]);
+        for (const fk of fkRows) {
+          await execute(`ALTER TABLE captain_store_invoices DROP FOREIGN KEY \`${fk.CONSTRAINT_NAME}\``);
+        }
+      }
+      await dropForeignKeys('captain_store_invoices', 'captain_id');
+      await dropForeignKeys('captain_store_invoices', 'store_id');
+      await execute('ALTER TABLE captain_store_invoices DROP INDEX uniq_captain_store_date');
+      if (!(await queryAll(`
+        SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'captain_store_invoices'
+          AND COLUMN_NAME = 'captain_id' AND REFERENCED_TABLE_NAME IS NOT NULL
+      `)).length) {
+        await execute(
+          'ALTER TABLE captain_store_invoices ADD CONSTRAINT fk_store_invoices_captain FOREIGN KEY (captain_id) REFERENCES captains(id) ON DELETE CASCADE'
+        );
+      }
+      if (!(await queryAll(`
+        SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'captain_store_invoices'
+          AND COLUMN_NAME = 'store_id' AND REFERENCED_TABLE_NAME IS NOT NULL
+      `)).length) {
+        await execute(
+          'ALTER TABLE captain_store_invoices ADD CONSTRAINT fk_store_invoices_store FOREIGN KEY (store_id) REFERENCES finance_stores(id) ON DELETE CASCADE'
+        );
+      }
+    }
+    const orderIdx = await queryAll(
+      'SHOW INDEX FROM captain_store_invoices WHERE Key_name = ?',
+      ['idx_store_invoices_order']
+    );
+    if (!orderIdx.length) {
+      await execute('CREATE INDEX idx_store_invoices_order ON captain_store_invoices (captain_id, sales_date, order_id)');
+    }
+    return;
+  }
+
+  const existing = sqlite.prepare('PRAGMA table_info(captain_store_invoices)').all();
+  if (!existing.some((c) => c.name === 'order_id')) {
+    sqlite.exec('ALTER TABLE captain_store_invoices ADD COLUMN order_id TEXT');
+  }
+  const storeIndexes = sqlite.prepare('PRAGMA index_list(captain_store_invoices)').all();
+  if (storeIndexes.some((i) => i.unique)) {
+    sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS captain_store_invoices_new (
+        id TEXT PRIMARY KEY,
+        captain_id TEXT NOT NULL REFERENCES captains(id) ON DELETE CASCADE,
+        store_id TEXT NOT NULL REFERENCES finance_stores(id) ON DELETE CASCADE,
+        amount REAL NOT NULL DEFAULT 0,
+        sales_date TEXT NOT NULL,
+        order_id TEXT,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+      INSERT INTO captain_store_invoices_new (id, captain_id, store_id, amount, sales_date, order_id, created_at)
+      SELECT id, captain_id, store_id, amount, sales_date, NULL, created_at
+      FROM captain_store_invoices;
+      DROP TABLE captain_store_invoices;
+      ALTER TABLE captain_store_invoices_new RENAME TO captain_store_invoices;
+    `);
+  }
+}
+
 async function ensureTableColumns(table, columns) {
   if (isMySQL) {
     for (const col of columns) {

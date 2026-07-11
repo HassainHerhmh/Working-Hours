@@ -155,6 +155,9 @@ export function buildFinanceSummary(finance, invoices, config, vouchers = []) {
       store_id: row.store_id,
       store_name: row.store_name,
       amount: num(row.amount),
+      order_id: row.order_id || null,
+      order_number: row.order_number || '',
+      source: row.order_id ? 'order' : 'manual',
     })),
   };
 }
@@ -258,7 +261,7 @@ async function getCaptainFinanceRow(captainId) {
 
 async function getCaptainInvoices(captainId, dateFilter) {
   let sql = `
-    SELECT i.id, i.store_id, i.amount, i.sales_date, s.name AS store_name
+    SELECT i.id, i.store_id, i.amount, i.sales_date, i.order_id, s.name AS store_name
     FROM captain_store_invoices i
     JOIN finance_stores s ON s.id = i.store_id
     WHERE i.captain_id = ?`;
@@ -275,8 +278,17 @@ async function getCaptainInvoices(captainId, dateFilter) {
     params.push(dateFilter.before);
   }
 
-  sql += ' ORDER BY s.name';
+  sql += ' ORDER BY s.name ASC, i.created_at ASC';
   return queryAll(sql, params);
+}
+
+async function enrichInvoiceLines(invoices) {
+  const orderDisplayMap = await buildOrderDisplayNumberMap();
+  return (invoices || []).map((row) => ({
+    ...row,
+    order_number: row.order_id ? String(orderDisplayMap.get(row.order_id) || '') : '',
+    source: row.order_id ? 'order' : 'manual',
+  }));
 }
 
 async function getCaptainVouchers(captainId) {
@@ -443,6 +455,8 @@ export async function getCaptainFinance(captainId, { period, date, sales_date } 
     total_invoices = invoices.reduce((s, row) => s + num(row.amount), 0);
   }
 
+  invoices = await enrichInvoiceLines(invoices);
+
   const summary = buildFinanceSummary(
     { ...finance, transfers_debts, rent, total_commission },
     invoices,
@@ -475,19 +489,19 @@ export async function saveCaptainFinance(captainId, data) {
 
   if (Array.isArray(data.invoices)) {
     await execute(
-      'DELETE FROM captain_store_invoices WHERE captain_id = ? AND sales_date = ?',
+      "DELETE FROM captain_store_invoices WHERE captain_id = ? AND sales_date = ? AND (order_id IS NULL OR order_id = '')",
       [captainId, sales_date]
     );
-    let totalInvoices = 0;
     for (const inv of data.invoices) {
       const amount = num(inv.amount);
       if (!inv.store_id || amount <= 0) continue;
-      totalInvoices += amount;
       await execute(
-        'INSERT INTO captain_store_invoices (id, captain_id, store_id, amount, sales_date) VALUES (?, ?, ?, ?, ?)',
-        [uuid(), captainId, inv.store_id, amount, sales_date]
+        'INSERT INTO captain_store_invoices (id, captain_id, store_id, amount, sales_date, order_id) VALUES (?, ?, ?, ?, ?, ?)',
+        [uuid(), captainId, inv.store_id, amount, sales_date, null]
       );
     }
+    const allLines = await getCaptainInvoices(captainId, sales_date);
+    const totalInvoices = allLines.reduce((s, row) => s + num(row.amount), 0);
     await recordInvoicePosting(
       captainId,
       totalInvoices,
@@ -589,7 +603,7 @@ async function computeTransfersDebtsFromOrders(captainId, salesDate) {
   return num(total);
 }
 
-async function computeStoreAmountsFromOrders(captainId, salesDate) {
+async function computeStoreInvoiceLinesFromOrders(captainId, salesDate) {
   const rows = await queryAll(
     `SELECT oi.order_id, oi.store_id, oi.invoice_amount, oi.is_external,
       s.discount_percent AS store_discount_percent,
@@ -603,7 +617,7 @@ async function computeStoreAmountsFromOrders(captainId, salesDate) {
     [captainId]
   );
 
-  const amounts = new Map();
+  const lines = [];
   for (const row of rows) {
     const orderDate = toDateKey(row.done_at || row.updated_at);
     if (orderDate !== salesDate) continue;
@@ -617,9 +631,26 @@ async function computeStoreAmountsFromOrders(captainId, salesDate) {
       )
     );
     if (pricing.net <= 0) continue;
-    amounts.set(row.store_id, num((amounts.get(row.store_id) || 0) + pricing.net));
+    lines.push({
+      store_id: row.store_id,
+      order_id: row.order_id,
+      amount: pricing.net,
+    });
   }
-  return amounts;
+  return lines;
+}
+
+async function replaceOrderInvoiceLinesForDay(captainId, salesDate, lines) {
+  await execute(
+    "DELETE FROM captain_store_invoices WHERE captain_id = ? AND sales_date = ? AND order_id IS NOT NULL AND order_id != ''",
+    [captainId, salesDate]
+  );
+  for (const line of lines) {
+    await execute(
+      'INSERT INTO captain_store_invoices (id, captain_id, store_id, amount, sales_date, order_id) VALUES (?, ?, ?, ?, ?, ?)',
+      [uuid(), captainId, line.store_id, line.amount, salesDate, line.order_id]
+    );
+  }
 }
 
 export async function reconcileCaptainDayFinance(captainId, salesDate) {
@@ -649,7 +680,12 @@ export async function reconcileCaptainDayFinance(captainId, salesDate) {
 
   if (ordersCount === 0) return null;
 
-  const storeAmounts = await computeStoreAmountsFromOrders(captainId, normalizedDate);
+  const manualTotalRow = await queryOne(
+    "SELECT COALESCE(SUM(amount), 0) AS total FROM captain_store_invoices WHERE captain_id = ? AND sales_date = ? AND (order_id IS NULL OR order_id = '')",
+    [captainId, normalizedDate]
+  );
+  totalInvoices = num(totalInvoices + num(manualTotalRow?.total));
+
   const postingChanged = num(posting.total_invoices) !== totalInvoices
     || Number(posting.orders_count || 0) !== ordersCount
     || num(posting.transfers_debts) !== transfersDebts;
@@ -661,16 +697,8 @@ export async function reconcileCaptainDayFinance(captainId, salesDate) {
     );
   }
 
-  await execute(
-    'DELETE FROM captain_store_invoices WHERE captain_id = ? AND sales_date = ?',
-    [captainId, normalizedDate]
-  );
-  for (const [storeId, amount] of storeAmounts) {
-    await execute(
-      'INSERT INTO captain_store_invoices (id, captain_id, store_id, amount, sales_date) VALUES (?, ?, ?, ?, ?)',
-      [uuid(), captainId, storeId, amount, normalizedDate]
-    );
-  }
+  const orderLines = await computeStoreInvoiceLinesFromOrders(captainId, normalizedDate);
+  await replaceOrderInvoiceLinesForDay(captainId, normalizedDate, orderLines);
 
   const commissionPosting = await queryOne(
     'SELECT id, total_commission, rent FROM finance_commission_postings WHERE captain_id = ? AND sales_date = ?',
@@ -703,27 +731,16 @@ export async function postCompletedOrderFinance(order) {
   const summary = summarizeOrderPricing(orderItems, order.delivery_fee);
   const invoiceOnlyTotal = summary.invoice_total_net;
 
+  await execute('DELETE FROM captain_store_invoices WHERE captain_id = ? AND order_id = ?', [captainId, order.id]);
   for (const item of orderItems) {
     if (item.is_external || !item.store_id) continue;
     const pricing = itemStorePricing(item.invoice_amount, false, item.store_discount_percent);
     if (pricing.net <= 0) continue;
 
-    const existingItem = await queryOne(
-      'SELECT id, amount FROM captain_store_invoices WHERE captain_id = ? AND store_id = ? AND sales_date = ?',
-      [captainId, item.store_id, salesDate]
+    await execute(
+      'INSERT INTO captain_store_invoices (id, captain_id, store_id, amount, sales_date, order_id) VALUES (?, ?, ?, ?, ?, ?)',
+      [uuid(), captainId, item.store_id, pricing.net, salesDate, order.id]
     );
-
-    if (existingItem) {
-      await execute(
-        'UPDATE captain_store_invoices SET amount = ? WHERE id = ?',
-        [num(num(existingItem.amount) + pricing.net), existingItem.id]
-      );
-    } else {
-      await execute(
-        'INSERT INTO captain_store_invoices (id, captain_id, store_id, amount, sales_date) VALUES (?, ?, ?, ?, ?)',
-        [uuid(), captainId, item.store_id, pricing.net, salesDate]
-      );
-    }
   }
 
   const deliveryFee = summary.delivery_fee;
@@ -1519,25 +1536,37 @@ export async function getCaptainAccountStatement({
 
       const orderRef = String(orderDisplayMap.get(order.id) || '');
       const summary = summarizePostedOrder(order, itemsByOrder.get(order.id) || []);
-      const invoiceTotal = summary.invoice_total_net;
+      const orderItems = itemsByOrder.get(order.id) || [];
       const externalTotal = summary.external_total;
       const deliveryFee = summary.delivery_fee;
       const paymentType = normalizePaymentType(order.payment_type);
 
-      if (invoiceTotal > 0) {
+      for (const item of orderItems) {
+        if (Boolean(item.is_external) || !item.store_id) continue;
+        const pricing = itemStorePricing(
+          item.invoice_amount,
+          false,
+          resolveStoreDiscountPercent(
+            item.store_discount_percent,
+            item.store_discount_from_date,
+            order.done_at || order.updated_at
+          )
+        );
+        if (pricing.net <= 0) continue;
+        const storeName = item.store_name || 'محل';
         shownInvoiceByDate.set(
           orderDate,
-          num((shownInvoiceByDate.get(orderDate) || 0) + invoiceTotal)
+          num((shownInvoiceByDate.get(orderDate) || 0) + pricing.net)
         );
         events.push({
-          sort_key: `${orderDate}T12:00:00.000|10|${orderRef}`,
+          sort_key: `${orderDate}T12:00:00.000|10|${orderRef}|${item.store_id}`,
           journal_date: orderDate,
           reference_type: 'order',
           reference_id: orderRef,
-          account_name: captain.name,
-          debit: invoiceTotal,
+          account_name: storeName,
+          debit: pricing.net,
           credit: 0,
-          notes: `فاتورة طلب #${orderRef} — ${order.customer_name || ''} — ${PAYMENT_LABELS[paymentType] || paymentType}`,
+          notes: `فاتورة ${storeName} — طلب #${orderRef} — ${order.customer_name || ''} — ${PAYMENT_LABELS[paymentType] || paymentType}`,
         });
       }
 
@@ -1557,8 +1586,8 @@ export async function getCaptainAccountStatement({
             debit: 0,
             credit: orderTotal,
             notes: paymentType === 'transfer'
-              ? `حوالة طلب #${orderRef} — ${order.customer_name || ''}${externalTotal > 0 && invoiceTotal === 0 ? ' — طلب خارجي' : ''}`
-              : `آجل طلب #${orderRef} — ${order.customer_name || ''}${externalTotal > 0 && invoiceTotal === 0 ? ' — طلب خارجي' : ''}`,
+              ? `حوالة طلب #${orderRef} — ${order.customer_name || ''}${externalTotal > 0 && summary.invoice_total_net === 0 ? ' — طلب خارجي' : ''}`
+              : `آجل طلب #${orderRef} — ${order.customer_name || ''}${externalTotal > 0 && summary.invoice_total_net === 0 ? ' — طلب خارجي' : ''}`,
           });
         }
       }
@@ -1587,7 +1616,9 @@ export async function getCaptainAccountStatement({
        ORDER BY sales_date ASC`,
       [captain_id, range.from, range.to]
     );
-    const storeInvoicesInRange = await getCaptainInvoices(captain_id, { from: range.from, to: range.to });
+    const storeInvoicesInRange = await enrichInvoiceLines(
+      await getCaptainInvoices(captain_id, { from: range.from, to: range.to })
+    );
     const storeInvoicesByDate = new Map();
     for (const inv of storeInvoicesInRange) {
       const salesDate = inv.sales_date || toDateKey(inv.created_at);
@@ -1599,49 +1630,28 @@ export async function getCaptainAccountStatement({
       const salesDate = posting.sales_date || toDateKey(posting.posted_at);
       if (!inDateRange(salesDate, range.from, range.to)) continue;
 
-      const postingInvoices = num(posting.total_invoices);
-      const shownFromOrders = num(shownInvoiceByDate.get(salesDate) || 0);
+      const storeLines = storeInvoicesByDate.get(salesDate) || [];
+      for (const inv of storeLines) {
+        if (inv.order_id) continue;
+        const amount = num(inv.amount);
+        if (amount <= 0) continue;
+        events.push({
+          sort_key: `${salesDate}T08:30:00.000|10|${inv.store_id}|manual`,
+          journal_date: salesDate,
+          reference_type: 'invoice_posting',
+          reference_id: '',
+          account_name: inv.store_name || captain.name,
+          debit: amount,
+          credit: 0,
+          notes: inv.store_name
+            ? `فاتورة يدوية — ${inv.store_name} — يوم ${salesDate}`
+            : `فاتورة يدوية — يوم ${salesDate}`,
+        });
+      }
+
       const postingTransfers = num(posting.transfers_debts);
       const shownTransfers = num(shownTransfersByDate.get(salesDate) || 0);
       const ordersCount = Number(posting.orders_count || 0);
-
-      if (postingInvoices > shownFromOrders + 0.001) {
-        const storeLines = storeInvoicesByDate.get(salesDate) || [];
-        if (shownFromOrders < 0.001 && storeLines.length > 0) {
-          for (const inv of storeLines) {
-            const amount = num(inv.amount);
-            if (amount <= 0) continue;
-            events.push({
-              sort_key: `${salesDate}T08:30:00.000|10|${inv.store_id}`,
-              journal_date: salesDate,
-              reference_type: 'invoice_posting',
-              reference_id: ordersCount ? String(ordersCount) : '',
-              account_name: captain.name,
-              debit: amount,
-              credit: 0,
-              notes: inv.store_name
-                ? `فاتورة يدوية — ${inv.store_name} — يوم ${salesDate}`
-                : `فاتورة يدوية — يوم ${salesDate}`,
-            });
-          }
-        } else {
-          const manualAmount = num(postingInvoices - shownFromOrders);
-          events.push({
-            sort_key: `${salesDate}T08:00:00.000|10|inv-manual`,
-            journal_date: salesDate,
-            reference_type: 'invoice_posting',
-            reference_id: ordersCount ? String(ordersCount) : '',
-            account_name: captain.name,
-            debit: manualAmount,
-            credit: 0,
-            notes: shownFromOrders > 0
-              ? `فواتير يدوية إضافية — يوم ${salesDate}`
-              : (ordersCount
-                ? `ترحيل فواتير يدوية — ${ordersCount} طلب — يوم ${salesDate}`
-                : `ترحيل فواتير يدوية — يوم ${salesDate}`),
-          });
-        }
-      }
 
       if (postingTransfers > shownTransfers + 0.001) {
         const manualTransfers = num(postingTransfers - shownTransfers);

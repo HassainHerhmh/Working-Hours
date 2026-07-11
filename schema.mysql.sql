@@ -136,8 +136,9 @@ CREATE TABLE IF NOT EXISTS captain_store_invoices (
   store_id VARCHAR(36) NOT NULL,
   amount DECIMAL(12,2) NOT NULL DEFAULT 0,
   sales_date VARCHAR(10) NOT NULL,
+  order_id VARCHAR(36) NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE KEY uniq_captain_store_date (captain_id, store_id, sales_date),
+  KEY idx_store_invoices_order (captain_id, sales_date, order_id),
   FOREIGN KEY (captain_id) REFERENCES captains(id) ON DELETE CASCADE,
   FOREIGN KEY (store_id) REFERENCES finance_stores(id) ON DELETE CASCADE
 );
