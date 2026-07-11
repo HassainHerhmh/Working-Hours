@@ -406,14 +406,13 @@ export async function getCaptainFinance(captainId, { period, date, sales_date } 
         [captainId, normalizedSalesDate]
       );
     }
+    await cleanupDuplicateManualInvoices(captainId, normalizedSalesDate);
+    total_invoices = await syncInvoicePostingTotal(captainId, normalizedSalesDate);
     invoices = await getCaptainInvoices(captainId, normalizedSalesDate);
     transfers_debts = posting
       ? num(posting.transfers_debts)
       : await computeTransfersDebtsFromOrders(captainId, normalizedSalesDate);
     orders_count = posting ? Number(posting.orders_count || 0) : 0;
-    total_invoices = posting
-      ? num(posting.total_invoices)
-      : invoices.reduce((s, row) => s + num(row.amount), 0);
 
     const commissionPosting = await queryOne(
       'SELECT * FROM finance_commission_postings WHERE captain_id = ? AND sales_date = ?',
@@ -500,8 +499,8 @@ export async function saveCaptainFinance(captainId, data) {
         [uuid(), captainId, inv.store_id, amount, sales_date, null]
       );
     }
-    const allLines = await getCaptainInvoices(captainId, sales_date);
-    const totalInvoices = allLines.reduce((s, row) => s + num(row.amount), 0);
+    await cleanupDuplicateManualInvoices(captainId, sales_date);
+    const totalInvoices = await syncInvoicePostingTotal(captainId, sales_date);
     await recordInvoicePosting(
       captainId,
       totalInvoices,
@@ -653,6 +652,47 @@ async function replaceOrderInvoiceLinesForDay(captainId, salesDate, lines) {
   }
 }
 
+async function cleanupDuplicateManualInvoices(captainId, salesDate) {
+  const lines = await getCaptainInvoices(captainId, salesDate);
+  const orderSumByStore = new Map();
+  for (const line of lines) {
+    if (!line.order_id) continue;
+    orderSumByStore.set(
+      line.store_id,
+      num((orderSumByStore.get(line.store_id) || 0) + line.amount)
+    );
+  }
+
+  for (const line of lines) {
+    if (line.order_id) continue;
+    const orderSum = orderSumByStore.get(line.store_id) || 0;
+    if (orderSum <= 0) continue;
+    const manualAmount = num(line.amount);
+    const isLegacyAggregate = Math.abs(manualAmount - orderSum) < 0.02
+      || manualAmount >= orderSum * 0.95;
+    if (isLegacyAggregate) {
+      await execute('DELETE FROM captain_store_invoices WHERE id = ?', [line.id]);
+    }
+  }
+}
+
+async function syncInvoicePostingTotal(captainId, salesDate) {
+  const normalizedDate = normalizeSalesDate(salesDate);
+  const lines = await getCaptainInvoices(captainId, normalizedDate);
+  const total = lines.reduce((sum, row) => sum + num(row.amount), 0);
+  const posting = await queryOne(
+    'SELECT id, total_invoices FROM finance_invoice_postings WHERE captain_id = ? AND sales_date = ?',
+    [captainId, normalizedDate]
+  );
+  if (posting && num(posting.total_invoices) !== total) {
+    await execute(
+      'UPDATE finance_invoice_postings SET total_invoices = ? WHERE id = ?',
+      [total, posting.id]
+    );
+  }
+  return total;
+}
+
 export async function reconcileCaptainDayFinance(captainId, salesDate) {
   const normalizedDate = normalizeSalesDate(salesDate);
   const posting = await queryOne(
@@ -699,6 +739,8 @@ export async function reconcileCaptainDayFinance(captainId, salesDate) {
 
   const orderLines = await computeStoreInvoiceLinesFromOrders(captainId, normalizedDate);
   await replaceOrderInvoiceLinesForDay(captainId, normalizedDate, orderLines);
+  await cleanupDuplicateManualInvoices(captainId, normalizedDate);
+  await syncInvoicePostingTotal(captainId, normalizedDate);
 
   const commissionPosting = await queryOne(
     'SELECT id, total_commission, rent FROM finance_commission_postings WHERE captain_id = ? AND sales_date = ?',
@@ -1519,6 +1561,7 @@ export async function getCaptainAccountStatement({
   if (mode === 'detailed') {
     const shownInvoiceByDate = new Map();
     const shownTransfersByDate = new Map();
+    const shownStoreInvoiceKeys = new Set();
 
     const orders = await queryAll(
       `SELECT o.*
@@ -1554,6 +1597,7 @@ export async function getCaptainAccountStatement({
         );
         if (pricing.net <= 0) continue;
         const storeName = item.store_name || 'محل';
+        shownStoreInvoiceKeys.add(`${orderDate}|${item.store_id}`);
         shownInvoiceByDate.set(
           orderDate,
           num((shownInvoiceByDate.get(orderDate) || 0) + pricing.net)
@@ -1633,6 +1677,7 @@ export async function getCaptainAccountStatement({
       const storeLines = storeInvoicesByDate.get(salesDate) || [];
       for (const inv of storeLines) {
         if (inv.order_id) continue;
+        if (shownStoreInvoiceKeys.has(`${salesDate}|${inv.store_id}`)) continue;
         const amount = num(inv.amount);
         if (amount <= 0) continue;
         events.push({
