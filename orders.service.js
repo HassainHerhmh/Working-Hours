@@ -190,15 +190,16 @@ function withDisplayNumbers(orders) {
   return orders.map((order, index) => ({ ...order, display_number: index + 1 }));
 }
 
-export async function listCustomers(queryText = '') {
+export async function listCustomers(queryText = '', { limit = 500 } = {}) {
   const q = `%${str(queryText)}%`;
+  const maxRows = Math.min(Math.max(Number(limit) || 500, 1), 1000);
   const rows = await queryAll(
     `SELECT *
      FROM customers
-     WHERE name LIKE ? OR phone LIKE ?
+     WHERE name LIKE ? OR phone LIKE ? OR address_text LIKE ?
      ORDER BY updated_at DESC, created_at DESC
-     LIMIT 30`,
-    [q, q]
+     LIMIT ${maxRows}`,
+    [q, q, q]
   );
   return rows;
 }
