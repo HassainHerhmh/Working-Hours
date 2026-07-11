@@ -1415,7 +1415,7 @@ export async function getRentReport({ period = 'day', date, from, to, captain_id
 export async function getStoresReport({ period = 'day', date, from, to }) {
   const range = getReportRange(period, date, from, to);
   const rows = await queryAll(
-    `SELECT s.id AS store_id, s.name AS store_name, i.sales_date,
+    `SELECT s.id AS store_id, s.name AS store_name, i.id, i.sales_date, i.order_id,
         c.id AS captain_id, c.name AS captain_name, c.captain_number, i.amount
      FROM captain_store_invoices i
      JOIN finance_stores s ON s.id = i.store_id
@@ -1425,6 +1425,7 @@ export async function getStoresReport({ period = 'day', date, from, to }) {
     [range.from, range.to]
   );
 
+  const orderDisplayMap = await buildOrderDisplayNumberMap();
   const byStore = new Map();
   for (const row of rows) {
     const current = byStore.get(row.store_id) || {
@@ -1437,11 +1438,15 @@ export async function getStoresReport({ period = 'day', date, from, to }) {
     current.total_sales += num(row.amount);
     current.captain_ids.add(row.captain_id);
     current.entries.push({
+      id: row.id,
       captain_id: row.captain_id,
       captain_name: row.captain_name,
       captain_number: row.captain_number,
       sales_date: row.sales_date,
       amount: num(row.amount),
+      order_id: row.order_id || null,
+      order_number: row.order_id ? String(orderDisplayMap.get(row.order_id) || '') : '',
+      source: row.order_id ? 'order' : 'manual',
     });
     byStore.set(row.store_id, current);
   }
