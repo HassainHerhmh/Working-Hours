@@ -19,6 +19,7 @@ import {
   migrateShiftPeriodColumns,
   migrateShiftReminderTable,
   migrateAttendanceTable,
+  migrateCaptainGroupsAndAttendanceOverrides,
   migrateFinanceTables,
   migrateOrdersTables,
   migrateOrdersUserColumns,
@@ -53,6 +54,7 @@ import { getUserPermissions, saveUserPermissions, resolveUserPermissions, create
 import * as smsGw from './smsGateway.service.js';
 import * as shiftReminder from './shiftReminder.service.js';
 import * as attendance from './attendance.service.js';
+import * as captainGroups from './captainGroups.service.js';
 import * as finance from './finance.service.js';
 import * as orders from './orders.service.js';
 import {
@@ -303,6 +305,7 @@ async function seedIfEmpty() {
   await migrateShiftPeriodColumns();
   await migrateShiftReminderTable();
   await migrateAttendanceTable();
+  await migrateCaptainGroupsAndAttendanceOverrides();
   await migrateFinanceTables();
   await migrateOrdersTables();
   await migrateOrdersUserColumns();
@@ -488,11 +491,47 @@ app.put('/api/users/:id/permissions', async (req, res) => {
 
 // ─── Captains ───────────────────────────────────────────────
 
+app.get('/api/captain-groups', async (_, res) => {
+  res.json(await captainGroups.listCaptainGroups());
+});
+
+app.post('/api/captain-groups', async (req, res) => {
+  try {
+    const group = await captainGroups.createCaptainGroup(req.body?.name);
+    res.status(201).json(group);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.put('/api/captain-groups/:id', async (req, res) => {
+  try {
+    res.json(await captainGroups.updateCaptainGroup(req.params.id, req.body?.name));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete('/api/captain-groups/:id', async (req, res) => {
+  try {
+    res.json(await captainGroups.deleteCaptainGroup(req.params.id));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 app.get('/api/captains', async (_, res) => {
-  const captains = await queryAll('SELECT * FROM captains ORDER BY created_at DESC');
+  const captains = await queryAll(`
+    SELECT c.*, g.name AS group_name
+    FROM captains c
+    LEFT JOIN captain_groups g ON g.id = c.group_id
+    ORDER BY c.created_at DESC
+  `);
   const balances = await finance.getCaptainBalancesMap();
   res.json(captains.map(captain => ({
     ...sanitizeCaptain(captain),
+    group_id: captain.group_id || null,
+    group_name: captain.group_name || '',
     balance: Number(balances[captain.id] || 0),
   })));
 });
@@ -504,13 +543,14 @@ app.get('/api/captains/:id', async (req, res) => {
 });
 
 app.post('/api/captains', upload.single('photo'), async (req, res) => {
-  const { name, phone, captain_number, username, password } = req.body;
+  const { name, phone, captain_number, username, password, group_id } = req.body;
   if (!name || !phone || !captain_number || !username) {
     return res.status(400).json({ error: 'الاسم والهاتف ورقم الكابتن واسم المستخدم مطلوبة' });
   }
   const id = uuid();
   const hash = bcrypt.hashSync(password || '123456', 10);
   const normalizedUsername = String(username).trim().toLowerCase();
+  const normalizedGroupId = String(group_id || '').trim() || null;
   let photo = '';
   let photo_data = null;
   let photo_mime = null;
@@ -521,8 +561,8 @@ app.post('/api/captains', upload.single('photo'), async (req, res) => {
   }
   try {
     await execute(
-      'INSERT INTO captains (id, name, phone, captain_number, username, photo, photo_data, photo_mime, password_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [id, name, phone, captain_number, normalizedUsername, photo, photo_data, photo_mime, hash]
+      'INSERT INTO captains (id, name, phone, captain_number, username, photo, photo_data, photo_mime, password_hash, group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [id, name, phone, captain_number, normalizedUsername, photo, photo_data, photo_mime, hash, normalizedGroupId]
     );
     res.status(201).json(sanitizeCaptain(await queryOne('SELECT * FROM captains WHERE id = ?', [id])));
   } catch (e) {
@@ -537,7 +577,7 @@ app.put('/api/captains/:id', upload.single('photo'), async (req, res) => {
   const existing = await queryOne('SELECT * FROM captains WHERE id = ?', [req.params.id]);
   if (!existing) return res.status(404).json({ error: 'الكابتن غير موجود' });
 
-  const { name, phone, captain_number, username, password } = req.body;
+  const { name, phone, captain_number, username, password, group_id } = req.body;
   let photo = existing.photo;
   let photo_data = existing.photo_data ?? null;
   let photo_mime = existing.photo_mime ?? null;
@@ -550,10 +590,13 @@ app.put('/api/captains/:id', upload.single('photo'), async (req, res) => {
   const normalizedUsername = username
     ? String(username).trim().toLowerCase()
     : existing.username;
+  const normalizedGroupId = group_id !== undefined
+    ? (String(group_id || '').trim() || null)
+    : (existing.group_id || null);
 
   try {
     await execute(
-      'UPDATE captains SET name = ?, phone = ?, captain_number = ?, username = ?, photo = ?, photo_data = ?, photo_mime = ?, password_hash = ? WHERE id = ?',
+      'UPDATE captains SET name = ?, phone = ?, captain_number = ?, username = ?, photo = ?, photo_data = ?, photo_mime = ?, password_hash = ?, group_id = ? WHERE id = ?',
       [
         name || existing.name,
         phone || existing.phone,
@@ -563,6 +606,7 @@ app.put('/api/captains/:id', upload.single('photo'), async (req, res) => {
         photo_data,
         photo_mime,
         hash,
+        normalizedGroupId,
         req.params.id
       ]
     );
@@ -1448,21 +1492,41 @@ app.get('/api/attendance/status/:captainId', async (req, res) => {
 });
 
 app.get('/api/attendance/report', async (req, res) => {
-  const { period = 'day', date, captain_id } = req.query;
+  const { period = 'day', date, captain_id, group_id } = req.query;
   const report = await attendance.getAttendanceReport({
     period: ['day', 'week', 'month'].includes(period) ? period : 'day',
     date: date || undefined,
     captain_id: captain_id || undefined,
+    group_id: group_id || undefined,
   });
   res.json(report);
 });
 
 app.get('/api/reports/attendance-monthly', async (req, res) => {
-  const { date, captain_id } = req.query;
+  const { date, captain_id, group_id } = req.query;
   res.json(await attendance.getAttendanceMonthlyMatrix({
     date: date || undefined,
     captain_id: captain_id || undefined,
+    group_id: group_id || undefined,
   }));
+});
+
+app.put('/api/attendance/override', async (req, res) => {
+  try {
+    const { captain_id, check_date, status, note } = req.body || {};
+    res.json(await attendance.saveAttendanceOverride({ captain_id, check_date, status, note }));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete('/api/attendance/override', async (req, res) => {
+  try {
+    const { captain_id, check_date } = req.query;
+    res.json(await attendance.clearAttendanceOverride(captain_id, check_date));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 // ─── Scheduler (checks every 30s) ───────────────────────────

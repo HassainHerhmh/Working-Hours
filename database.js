@@ -1400,6 +1400,68 @@ export async function migrateStoredMediaColumns() {
   ]);
 }
 
+export async function migrateCaptainGroupsAndAttendanceOverrides() {
+  if (isMySQL) {
+    await execute(`
+      CREATE TABLE IF NOT EXISTS captain_groups (
+        id VARCHAR(36) PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    const groupCol = await queryAll("SHOW COLUMNS FROM captains LIKE 'group_id'");
+    if (!groupCol.length) {
+      await execute('ALTER TABLE captains ADD COLUMN group_id VARCHAR(36) NULL');
+    }
+    const fkRows = await queryAll(`
+      SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'captains'
+        AND COLUMN_NAME = 'group_id' AND REFERENCED_TABLE_NAME = 'captain_groups'
+    `);
+    if (!fkRows.length) {
+      await execute(
+        'ALTER TABLE captains ADD CONSTRAINT fk_captains_group FOREIGN KEY (group_id) REFERENCES captain_groups(id) ON DELETE SET NULL'
+      ).catch(() => {});
+    }
+    await execute(`
+      CREATE TABLE IF NOT EXISTS attendance_overrides (
+        id VARCHAR(36) PRIMARY KEY,
+        captain_id VARCHAR(36) NOT NULL,
+        check_date VARCHAR(10) NOT NULL,
+        status VARCHAR(20) NOT NULL,
+        note TEXT NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_attendance_override (captain_id, check_date),
+        FOREIGN KEY (captain_id) REFERENCES captains(id) ON DELETE CASCADE
+      )
+    `);
+    return;
+  }
+
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS captain_groups (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
+  const captainCols = sqlite.prepare('PRAGMA table_info(captains)').all();
+  if (!captainCols.some((c) => c.name === 'group_id')) {
+    sqlite.exec('ALTER TABLE captains ADD COLUMN group_id TEXT REFERENCES captain_groups(id) ON DELETE SET NULL');
+  }
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS attendance_overrides (
+      id TEXT PRIMARY KEY,
+      captain_id TEXT NOT NULL REFERENCES captains(id) ON DELETE CASCADE,
+      check_date TEXT NOT NULL,
+      status TEXT NOT NULL,
+      note TEXT DEFAULT '',
+      updated_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(captain_id, check_date)
+    )
+  `);
+}
+
 export function getDbType() {
   return isMySQL ? 'mysql' : 'sqlite';
 }
