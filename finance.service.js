@@ -1900,3 +1900,141 @@ export async function getCaptainAccountStatement({
     },
   };
 }
+
+export async function getStoreAccountStatement({
+  store_id,
+  period = 'month',
+  date,
+  from,
+  to,
+  mode = 'detailed',
+  include_opening = true,
+}) {
+  if (!store_id) throw new Error('المحل مطلوب');
+
+  const range = getReportRange(period, date, from, to);
+  const store = await queryOne('SELECT id, name FROM finance_stores WHERE id = ?', [store_id]);
+  if (!store) throw new Error('المحل غير موجود');
+
+  const orderDisplayMap = await buildOrderDisplayNumberMap();
+  const invoiceRows = await queryAll(
+    `SELECT i.id, i.sales_date, i.amount, i.order_id, i.created_at,
+        c.id AS captain_id, c.name AS captain_name, c.captain_number
+     FROM captain_store_invoices i
+     JOIN captains c ON c.id = i.captain_id
+     WHERE i.store_id = ?
+     ORDER BY i.sales_date ASC, i.created_at ASC`,
+    [store_id]
+  );
+
+  let openingBalance = 0;
+  const events = [];
+
+  if (include_opening) {
+    openingBalance = invoiceRows
+      .filter((row) => isBeforeDate(row.sales_date || row.created_at, range.from))
+      .reduce((sum, row) => sum + num(row.amount), 0);
+    if (openingBalance !== 0 || invoiceRows.some((row) => isBeforeDate(row.sales_date || row.created_at, range.from))) {
+      const openingDate = dayBeforeKey(range.from);
+      events.push({
+        sort_key: `${openingDate}T00:00:00.000|00`,
+        journal_date: openingDate,
+        reference_type: 'opening',
+        reference_id: '',
+        account_name: store.name,
+        debit: 0,
+        credit: openingBalance,
+        notes: `رصيد سابق حتى ${openingDate}`,
+        is_opening: true,
+        preset_balance: openingBalance,
+      });
+    }
+  }
+
+  const periodInvoices = invoiceRows.filter((row) =>
+    inDateRange(row.sales_date || row.created_at, range.from, range.to)
+  );
+
+  if (mode === 'summary') {
+    const byDate = new Map();
+    for (const inv of periodInvoices) {
+      const salesDate = inv.sales_date || toDateKey(inv.created_at);
+      const current = byDate.get(salesDate) || { total: 0, count: 0, captains: new Set() };
+      current.total += num(inv.amount);
+      current.count += 1;
+      current.captains.add(inv.captain_id);
+      byDate.set(salesDate, current);
+    }
+    for (const [salesDate, day] of byDate.entries()) {
+      events.push({
+        sort_key: `${salesDate}T08:00:00.000|10|summary`,
+        journal_date: salesDate,
+        reference_type: 'invoice_posting',
+        reference_id: String(day.count),
+        account_name: store.name,
+        debit: 0,
+        credit: num(day.total),
+        notes: `مبيعات يوم ${salesDate} — ${day.count} فاتورة — ${day.captains.size} كابتن`,
+      });
+    }
+  } else {
+    for (const inv of periodInvoices) {
+      const salesDate = inv.sales_date || toDateKey(inv.created_at);
+      const amount = num(inv.amount);
+      if (amount <= 0) continue;
+      const orderRef = inv.order_id ? String(orderDisplayMap.get(inv.order_id) || '') : '';
+      const captainLabel = inv.captain_name
+        ? `${inv.captain_name}${inv.captain_number ? ` (${inv.captain_number})` : ''}`
+        : 'كابتن';
+      events.push({
+        sort_key: `${salesDate}T12:00:00.000|10|${inv.id}`,
+        journal_date: salesDate,
+        reference_type: inv.order_id ? 'order' : 'invoice_posting',
+        reference_id: orderRef,
+        account_name: captainLabel,
+        debit: 0,
+        credit: amount,
+        notes: inv.order_id
+          ? `طلب #${orderRef} — ${captainLabel}`
+          : `فاتورة يدوية — ${captainLabel}`,
+      });
+    }
+  }
+
+  events.sort((a, b) => String(a.sort_key).localeCompare(String(b.sort_key)));
+
+  let running = openingBalance;
+  const rows = [];
+  for (const event of events) {
+    if (event.is_opening) {
+      running = num(event.preset_balance);
+      rows.push(buildStatementRow({ ...event, balance: running }));
+      continue;
+    }
+    running = applyBalanceChange(running, event.debit, event.credit);
+    rows.push(buildStatementRow({ ...event, balance: running }));
+  }
+
+  const totalDebit = rows.reduce((sum, row) => sum + (row.is_opening ? 0 : num(row.debit)), 0);
+  const totalCredit = rows.reduce((sum, row) => sum + (row.is_opening ? 0 : num(row.credit)), 0);
+  const closingBalance = rows.length ? num(rows[rows.length - 1].balance) : openingBalance;
+
+  return {
+    success: true,
+    period,
+    from: range.from,
+    to: range.to,
+    mode,
+    entity_type: 'store',
+    store,
+    rows,
+    summary: {
+      opening_balance: openingBalance,
+      closing_balance: closingBalance,
+      closing_status: balanceStatus(closingBalance),
+      total_debit: num(totalDebit),
+      total_credit: num(totalCredit),
+      entries_count: rows.filter(r => !r.is_opening).length,
+    },
+  };
+}

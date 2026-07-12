@@ -1050,19 +1050,22 @@ app.get('/api/reports/stores', async (req, res) => {
 
 app.get('/api/reports/account-statement', async (req, res) => {
   try {
-    const { period = 'month', date, from, to, captain_id, mode, include_opening } = req.query;
-    if (!captain_id) {
-      return res.status(400).json({ error: 'الكابتن مطلوب' });
-    }
-    res.json(await finance.getCaptainAccountStatement({
-      captain_id,
+    const { period = 'month', date, from, to, captain_id, store_id, mode, include_opening } = req.query;
+    const options = {
       period,
       date,
       from,
       to,
       mode: mode === 'summary' ? 'summary' : 'detailed',
       include_opening: include_opening !== 'false',
-    }));
+    };
+    if (store_id) {
+      return res.json(await finance.getStoreAccountStatement({ ...options, store_id }));
+    }
+    if (captain_id) {
+      return res.json(await finance.getCaptainAccountStatement({ ...options, captain_id }));
+    }
+    return res.status(400).json({ error: 'الكابتن أو المحل مطلوب' });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
