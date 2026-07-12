@@ -10,6 +10,7 @@ export const PERMISSION_SECTION_KEYS = [
   'chat',
   'orders',
   'finance',
+  'discounts',
   'reports_attendance',
   'reports_sales',
   'reports_commissions',

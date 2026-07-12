@@ -16,14 +16,56 @@ export function normalizeDateKey(value) {
   return d.toISOString().slice(0, 10);
 }
 
+export function isDiscountActiveForDate(record, orderDate) {
+  if (!record) return false;
+  const pct = normalizeDiscountPercent(record.discount_percent);
+  if (pct <= 0) return false;
+
+  const orderKey = normalizeDateKey(orderDate);
+  if (!orderKey) return false;
+
+  const mode = String(record.date_mode || 'day').toLowerCase();
+  if (mode === 'range') {
+    const from = normalizeDateKey(record.discount_from);
+    const to = normalizeDateKey(record.discount_to);
+    if (!from || !to) return false;
+    const safeFrom = from <= to ? from : to;
+    const safeTo = from <= to ? to : from;
+    return orderKey >= safeFrom && orderKey <= safeTo;
+  }
+
+  const targetDate = normalizeDateKey(record.discount_date);
+  if (!targetDate) return false;
+  return orderKey === targetDate;
+}
+
+export function pickDiscountsForDate(discounts, orderDate) {
+  const storeMap = new Map();
+  let deliveryPercent = 0;
+
+  for (const row of discounts || []) {
+    if (!isDiscountActiveForDate(row, orderDate)) continue;
+    const pct = normalizeDiscountPercent(row.discount_percent);
+    if (pct <= 0) continue;
+
+    const type = String(row.discount_type || 'store').toLowerCase();
+    if (type === 'store' && row.store_id) {
+      storeMap.set(row.store_id, Math.max(storeMap.get(row.store_id) || 0, pct));
+    } else if (type === 'delivery') {
+      deliveryPercent = Math.max(deliveryPercent, pct);
+    }
+  }
+
+  return { storeMap, deliveryPercent };
+}
+
 export function resolveStoreDiscountPercent(discountPercent, discountDate, orderDate) {
   const pct = normalizeDiscountPercent(discountPercent);
   if (pct <= 0) return 0;
-  const targetDate = normalizeDateKey(discountDate);
-  if (!targetDate) return 0;
-  const orderKey = normalizeDateKey(orderDate);
-  if (!orderKey) return 0;
-  return orderKey === targetDate ? pct : 0;
+  return isDiscountActiveForDate(
+    { discount_percent: pct, date_mode: 'day', discount_date: discountDate },
+    orderDate
+  ) ? pct : 0;
 }
 
 export function itemStorePricing(invoiceAmount, isExternal, discountPercent = 0) {
@@ -41,7 +83,7 @@ export function itemStorePricing(invoiceAmount, isExternal, discountPercent = 0)
   };
 }
 
-export function summarizeOrderPricing(items = [], deliveryFee = 0) {
+export function summarizeOrderPricing(items = [], deliveryFee = 0, deliveryDiscountPercent = 0) {
   let invoice_total = 0;
   let store_discount_total = 0;
   let invoice_total_net = 0;
@@ -78,12 +120,19 @@ export function summarizeOrderPricing(items = [], deliveryFee = 0) {
     }
   }
 
-  const delivery_fee = num(deliveryFee);
+  const delivery_fee_gross = num(deliveryFee);
+  const delivery_discount_percent = normalizeDiscountPercent(deliveryDiscountPercent);
+  const delivery_discount_amount = num(delivery_fee_gross * delivery_discount_percent / 100);
+  const delivery_fee = num(delivery_fee_gross - delivery_discount_amount);
+
   return {
     invoice_total,
     store_discount_total,
     invoice_total_net,
     external_total,
+    delivery_fee_gross,
+    delivery_discount_percent,
+    delivery_discount_amount,
     delivery_fee,
     grand_total: num(invoice_total_net + external_total + delivery_fee),
     store_discounts: Array.from(discountMap.values()),

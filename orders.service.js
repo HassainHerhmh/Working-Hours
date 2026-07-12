@@ -2,7 +2,8 @@ import { v4 as uuid } from 'uuid';
 import { yemenDateKey } from './attendance.service.js';
 import { execute, queryAll, queryOne, isMySQL } from './database.js';
 import { postCompletedOrderFinance, reconcileCaptainDayFinance } from './finance.service.js';
-import { itemStorePricing, summarizeOrderPricing, resolveStoreDiscountPercent } from './orderPricing.js';
+import { itemStorePricing, summarizeOrderPricing, pickDiscountsForDate } from './orderPricing.js';
+import { getAllDiscountsCached } from './discounts.service.js';
 
 function num(v) {
   return Math.round((Number(v) || 0) * 100) / 100;
@@ -117,8 +118,7 @@ async function attachItems(orders) {
   if (!orders.length) return orders;
   const placeholders = orders.map(() => '?').join(', ');
   const rows = await queryAll(
-    `SELECT oi.*, s.name AS finance_store_name, s.discount_percent AS store_discount_percent,
-            s.discount_from_date AS store_discount_from_date,
+    `SELECT oi.*, s.name AS finance_store_name,
             o.done_at, o.updated_at, o.created_at
      FROM order_items oi
      LEFT JOIN finance_stores s ON s.id = oi.store_id
@@ -127,20 +127,22 @@ async function attachItems(orders) {
      ORDER BY oi.created_at ASC`,
     orders.map(o => o.id)
   );
+  const discountsList = await getAllDiscountsCached();
+  const orderDiscountCache = new Map();
   const map = new Map();
   for (const row of rows) {
     const current = map.get(row.order_id) || [];
     const isExternal = Boolean(row.is_external);
     const orderDate = row.done_at || row.updated_at || row.created_at;
-    const effectiveDiscount = resolveStoreDiscountPercent(
-      row.store_discount_percent,
-      row.store_discount_from_date,
-      orderDate
-    );
+    if (!orderDiscountCache.has(row.order_id)) {
+      orderDiscountCache.set(row.order_id, pickDiscountsForDate(discountsList, orderDate));
+    }
+    const { storeMap } = orderDiscountCache.get(row.order_id);
+    const effectiveDiscount = isExternal ? 0 : (storeMap.get(row.store_id) || 0);
     const pricing = itemStorePricing(
       row.invoice_amount,
       isExternal,
-      isExternal ? 0 : effectiveDiscount
+      effectiveDiscount
     );
     current.push({
       id: row.id,
@@ -176,7 +178,10 @@ async function attachItems(orders) {
   }
   return orders.map((order) => {
     const items = map.get(order.id) || [];
-    const pricing = summarizeOrderPricing(items, order.delivery_fee);
+    const orderDate = order.done_at || order.updated_at || order.created_at;
+    const { deliveryPercent } = orderDiscountCache.get(order.id)
+      || pickDiscountsForDate(discountsList, orderDate);
+    const pricing = summarizeOrderPricing(items, order.delivery_fee, deliveryPercent);
     return {
       ...order,
       items,

@@ -1,7 +1,8 @@
 import { v4 as uuid } from 'uuid';
 import { queryAll, queryOne, execute, isMySQL } from './database.js';
 import { getDateRange, yemenDateKey } from './attendance.service.js';
-import { itemStorePricing, summarizeOrderPricing, orderTransfersDebtsAmount as pricingTransfersDebts, num as pricingNum, resolveStoreDiscountPercent } from './orderPricing.js';
+import { itemStorePricing, summarizeOrderPricing, orderTransfersDebtsAmount as pricingTransfersDebts, num as pricingNum, pickDiscountsForDate } from './orderPricing.js';
+import { getAllDiscountsCached } from './discounts.service.js';
 
 function num(v) {
   return Math.round((Number(v) || 0) * 100) / 100;
@@ -195,20 +196,13 @@ export async function listStores() {
   return queryAll('SELECT * FROM finance_stores ORDER BY name');
 }
 
-export async function createStore(name, discount_percent = 0, discount_from_date = null) {
+export async function createStore(name) {
   const trimmed = String(name || '').trim();
   if (!trimmed) throw new Error('اسم المحل مطلوب');
   const id = uuid();
-  const discount = pricingNum(discount_percent);
-  const fromDate = discount > 0 && discount_from_date
-    ? normalizeSalesDate(discount_from_date)
-    : null;
-  if (discount > 0 && !fromDate) {
-    throw new Error('تاريخ الخصم مطلوب عند تفعيل الخصم');
-  }
   await execute(
-    'INSERT INTO finance_stores (id, name, discount_percent, discount_from_date) VALUES (?, ?, ?, ?)',
-    [id, trimmed, discount, fromDate]
+    'INSERT INTO finance_stores (id, name, discount_percent, discount_from_date) VALUES (?, ?, 0, NULL)',
+    [id, trimmed]
   );
   return queryOne('SELECT * FROM finance_stores WHERE id = ?', [id]);
 }
@@ -220,23 +214,9 @@ export async function updateStore(id, payload = {}) {
   const trimmed = payload.name !== undefined ? String(payload.name || '').trim() : existing.name;
   if (!trimmed) throw new Error('اسم المحل مطلوب');
 
-  const discount = payload.discount_percent !== undefined
-    ? pricingNum(payload.discount_percent)
-    : pricingNum(existing.discount_percent);
-
-  let fromDate = payload.discount_from_date !== undefined
-    ? (payload.discount_from_date ? normalizeSalesDate(payload.discount_from_date) : null)
-    : (existing.discount_from_date || null);
-
-  if (discount <= 0) {
-    fromDate = null;
-  } else if (!fromDate) {
-    throw new Error('تاريخ الخصم مطلوب عند تفعيل الخصم');
-  }
-
   await execute(
-    'UPDATE finance_stores SET name = ?, discount_percent = ?, discount_from_date = ? WHERE id = ?',
-    [trimmed, discount, fromDate, id]
+    'UPDATE finance_stores SET name = ? WHERE id = ?',
+    [trimmed, id]
   );
   return queryOne('SELECT * FROM finance_stores WHERE id = ?', [id]);
 }
@@ -544,30 +524,27 @@ function orderTransfersDebtsAmount(order, invoiceTotal = null, externalTotal = n
 async function getPostedOrderItemsForCaptain(captainId) {
   return queryAll(
     `SELECT oi.order_id, oi.store_id, oi.store_name, oi.invoice_amount, oi.is_external,
-      s.discount_percent AS store_discount_percent,
-      s.discount_from_date AS store_discount_from_date,
       o.payment_type, o.delivery_fee, o.done_at, o.updated_at
      FROM order_items oi
      INNER JOIN \`orders\` o ON o.id = oi.order_id
-     LEFT JOIN finance_stores s ON s.id = oi.store_id
      WHERE o.captain_id = ? AND o.status = 'done' AND o.finance_posted_at IS NOT NULL`,
     [captainId]
   );
 }
 
-function summarizePostedOrder(order, items) {
+function summarizePostedOrder(order, items, discountsList) {
+  const { storeMap, deliveryPercent } = pickDiscountsForDate(
+    discountsList,
+    order.done_at || order.updated_at
+  );
   const orderItems = items.map((row) => ({
     store_id: row.store_id,
     store_name: row.store_name,
     invoice_amount: pricingNum(row.invoice_amount),
     is_external: Boolean(row.is_external),
-    store_discount_percent: resolveStoreDiscountPercent(
-      row.store_discount_percent,
-      row.store_discount_from_date,
-      row.done_at || row.updated_at
-    ),
+    store_discount_percent: storeMap.get(row.store_id) || 0,
   }));
-  return summarizeOrderPricing(orderItems, order.delivery_fee);
+  return summarizeOrderPricing(orderItems, order.delivery_fee, deliveryPercent);
 }
 
 async function getPostedDoneOrdersWithTotals(captainId) {
@@ -594,11 +571,12 @@ function groupItemsByOrderId(rows) {
 async function computeTransfersDebtsFromOrders(captainId, salesDate) {
   const orders = await getPostedDoneOrdersWithTotals(captainId);
   const itemsByOrder = groupItemsByOrderId(await getPostedOrderItemsForCaptain(captainId));
+  const discountsList = await getAllDiscountsCached();
   let total = 0;
   for (const order of orders) {
     const orderDate = toDateKey(order.done_at || order.updated_at);
     if (orderDate !== salesDate) continue;
-    const summary = summarizePostedOrder(order, itemsByOrder.get(order.id) || []);
+    const summary = summarizePostedOrder(order, itemsByOrder.get(order.id) || [], discountsList);
     total += pricingTransfersDebts(order, summary);
   }
   return num(total);
@@ -607,29 +585,24 @@ async function computeTransfersDebtsFromOrders(captainId, salesDate) {
 async function computeStoreInvoiceLinesFromOrders(captainId, salesDate) {
   const rows = await queryAll(
     `SELECT oi.order_id, oi.store_id, oi.invoice_amount, oi.is_external,
-      s.discount_percent AS store_discount_percent,
-      s.discount_from_date AS store_discount_from_date,
       o.done_at, o.updated_at
      FROM order_items oi
      INNER JOIN \`orders\` o ON o.id = oi.order_id
-     LEFT JOIN finance_stores s ON s.id = oi.store_id
      WHERE o.captain_id = ? AND o.status = 'done' AND o.finance_posted_at IS NOT NULL
        AND oi.is_external = 0 AND oi.store_id IS NOT NULL AND oi.invoice_amount > 0`,
     [captainId]
   );
+  const discountsList = await getAllDiscountsCached();
 
   const lines = [];
   for (const row of rows) {
     const orderDate = toDateKey(row.done_at || row.updated_at);
     if (orderDate !== salesDate) continue;
+    const { storeMap } = pickDiscountsForDate(discountsList, row.done_at || row.updated_at);
     const pricing = itemStorePricing(
       row.invoice_amount,
       false,
-      resolveStoreDiscountPercent(
-        row.store_discount_percent,
-        row.store_discount_from_date,
-        row.done_at || row.updated_at
-      )
+      storeMap.get(row.store_id) || 0
     );
     if (pricing.net <= 0) continue;
     lines.push({
@@ -705,6 +678,7 @@ export async function reconcileCaptainDayFinance(captainId, salesDate) {
 
   const orders = await getPostedDoneOrdersWithTotals(captainId);
   const itemsByOrder = groupItemsByOrderId(await getPostedOrderItemsForCaptain(captainId));
+  const discountsList = await getAllDiscountsCached();
   let totalInvoices = 0;
   let ordersCount = 0;
   let transfersDebts = 0;
@@ -713,7 +687,7 @@ export async function reconcileCaptainDayFinance(captainId, salesDate) {
   for (const order of orders) {
     const orderDate = toDateKey(order.done_at || order.updated_at);
     if (orderDate !== normalizedDate) continue;
-    const summary = summarizePostedOrder(order, itemsByOrder.get(order.id) || []);
+    const summary = summarizePostedOrder(order, itemsByOrder.get(order.id) || [], discountsList);
     ordersCount += 1;
     totalInvoices += summary.invoice_total_net;
     transfersDebts += pricingTransfersDebts(order, summary);
@@ -1578,6 +1552,7 @@ export async function getCaptainAccountStatement({
       [captain_id]
     );
     const itemsByOrder = groupItemsByOrderId(await getPostedOrderItemsForCaptain(captain_id));
+    const discountsList = await getAllDiscountsCached();
 
     for (const order of orders) {
       const orderDate = toDateKey(order.done_at || order.updated_at);
@@ -1585,22 +1560,19 @@ export async function getCaptainAccountStatement({
       if (!activeInvoiceDates.has(orderDate)) continue;
 
       const orderRef = String(orderDisplayMap.get(order.id) || '');
-      const summary = summarizePostedOrder(order, itemsByOrder.get(order.id) || []);
+      const summary = summarizePostedOrder(order, itemsByOrder.get(order.id) || [], discountsList);
       const orderItems = itemsByOrder.get(order.id) || [];
       const externalTotal = summary.external_total;
       const deliveryFee = summary.delivery_fee;
       const paymentType = normalizePaymentType(order.payment_type);
+      const { storeMap } = pickDiscountsForDate(discountsList, order.done_at || order.updated_at);
 
       for (const item of orderItems) {
         if (Boolean(item.is_external) || !item.store_id) continue;
         const pricing = itemStorePricing(
           item.invoice_amount,
           false,
-          resolveStoreDiscountPercent(
-            item.store_discount_percent,
-            item.store_discount_from_date,
-            order.done_at || order.updated_at
-          )
+          storeMap.get(item.store_id) || 0
         );
         if (pricing.net <= 0) continue;
         const storeName = item.store_name || 'محل';
@@ -1728,10 +1700,11 @@ export async function getCaptainAccountStatement({
       [captain_id]
     );
     const transferItemsByOrder = groupItemsByOrderId(await getPostedOrderItemsForCaptain(captain_id));
+    const summaryDiscountsList = await getAllDiscountsCached();
     for (const order of ordersForTransfers) {
       const orderDate = toDateKey(order.done_at || order.updated_at);
       if (!inDateRange(orderDate, range.from, range.to)) continue;
-      const summary = summarizePostedOrder(order, transferItemsByOrder.get(order.id) || []);
+      const summary = summarizePostedOrder(order, transferItemsByOrder.get(order.id) || [], summaryDiscountsList);
       const amt = pricingTransfersDebts(order, summary);
       if (amt > 0) {
         transfersDebtsByDate.set(orderDate, num((transfersDebtsByDate.get(orderDate) || 0) + amt));

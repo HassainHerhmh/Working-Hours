@@ -20,6 +20,7 @@ import {
   migrateShiftReminderTable,
   migrateAttendanceTable,
   migrateCaptainGroupsAndAttendanceOverrides,
+  migrateFinanceDiscountsTable,
   migrateFinanceTables,
   migrateOrdersTables,
   migrateOrdersUserColumns,
@@ -55,6 +56,7 @@ import * as smsGw from './smsGateway.service.js';
 import * as shiftReminder from './shiftReminder.service.js';
 import * as attendance from './attendance.service.js';
 import * as captainGroups from './captainGroups.service.js';
+import * as discounts from './discounts.service.js';
 import * as finance from './finance.service.js';
 import * as orders from './orders.service.js';
 import {
@@ -306,6 +308,7 @@ async function seedIfEmpty() {
   await migrateShiftReminderTable();
   await migrateAttendanceTable();
   await migrateCaptainGroupsAndAttendanceOverrides();
+  await migrateFinanceDiscountsTable();
   await migrateFinanceTables();
   await migrateOrdersTables();
   await migrateOrdersUserColumns();
@@ -964,8 +967,36 @@ app.get('/api/finance/stores', async (_, res) => {
 
 app.post('/api/finance/stores', async (req, res) => {
   try {
-    const store = await finance.createStore(req.body.name, req.body.discount_percent, req.body.discount_from_date);
+    const store = await finance.createStore(req.body.name);
     res.status(201).json(store);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.get('/api/finance/discounts', async (_, res) => {
+  res.json(await discounts.listDiscounts());
+});
+
+app.post('/api/finance/discounts', async (req, res) => {
+  try {
+    res.status(201).json(await discounts.createDiscount(req.body));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.put('/api/finance/discounts/:id', async (req, res) => {
+  try {
+    res.json(await discounts.updateDiscount(req.params.id, req.body));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete('/api/finance/discounts/:id', async (req, res) => {
+  try {
+    res.json(await discounts.deleteDiscount(req.params.id));
   } catch (err) {
     res.status(400).json({ error: err.message });
   }

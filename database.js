@@ -1462,6 +1462,74 @@ export async function migrateCaptainGroupsAndAttendanceOverrides() {
   `);
 }
 
+export async function migrateFinanceDiscountsTable() {
+  if (isMySQL) {
+    await execute(`
+      CREATE TABLE IF NOT EXISTS finance_discounts (
+        id VARCHAR(36) PRIMARY KEY,
+        discount_type VARCHAR(20) NOT NULL,
+        store_id VARCHAR(36) NULL,
+        discount_percent DECIMAL(5,2) NOT NULL DEFAULT 0,
+        date_mode VARCHAR(10) NOT NULL DEFAULT 'day',
+        discount_date VARCHAR(10) NULL,
+        discount_from VARCHAR(10) NULL,
+        discount_to VARCHAR(10) NULL,
+        note TEXT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (store_id) REFERENCES finance_stores(id) ON DELETE CASCADE
+      )
+    `);
+  } else {
+    sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS finance_discounts (
+        id TEXT PRIMARY KEY,
+        discount_type TEXT NOT NULL,
+        store_id TEXT REFERENCES finance_stores(id) ON DELETE CASCADE,
+        discount_percent REAL NOT NULL DEFAULT 0,
+        date_mode TEXT NOT NULL DEFAULT 'day',
+        discount_date TEXT,
+        discount_from TEXT,
+        discount_to TEXT,
+        note TEXT DEFAULT '',
+        created_at TEXT DEFAULT (datetime('now'))
+      )
+    `);
+  }
+
+  const legacyStores = await queryAll(
+    'SELECT id, discount_percent, discount_from_date FROM finance_stores WHERE discount_percent > 0 AND discount_from_date IS NOT NULL AND discount_from_date != ?',
+    ['']
+  );
+  for (const store of legacyStores) {
+    const existing = await queryOne(
+      'SELECT id FROM finance_discounts WHERE store_id = ? AND date_mode = ? AND discount_date = ?',
+      [store.id, 'day', store.discount_from_date]
+    );
+    if (!existing) {
+      await execute(
+        `INSERT INTO finance_discounts
+          (id, discount_type, store_id, discount_percent, date_mode, discount_date, discount_from, discount_to, note)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          uuid(),
+          'store',
+          store.id,
+          store.discount_percent,
+          'day',
+          store.discount_from_date,
+          null,
+          null,
+          'منقول من إعداد المحلات',
+        ]
+      );
+    }
+    await execute(
+      'UPDATE finance_stores SET discount_percent = 0, discount_from_date = NULL WHERE id = ?',
+      [store.id]
+    );
+  }
+}
+
 export function getDbType() {
   return isMySQL ? 'mysql' : 'sqlite';
 }
