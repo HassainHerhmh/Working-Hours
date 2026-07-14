@@ -16,6 +16,7 @@ export const PERMISSION_SECTION_KEYS = [
   'reports_commissions',
   'reports_rent',
   'reports_stores',
+  'reports_credit_transfer',
   'reports_account_statement',
 ];
 

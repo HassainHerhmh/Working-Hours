@@ -2011,3 +2011,132 @@ export async function getStoreAccountStatement({
     },
   };
 }
+
+export async function getCreditTransferReport({
+  period = 'day',
+  date,
+  from,
+  to,
+  captain_id,
+  payment_type,
+} = {}) {
+  const range = getReportRange(period, date, from, to);
+  const typeFilter = ['credit', 'transfer'].includes(String(payment_type || '').toLowerCase())
+    ? String(payment_type).toLowerCase()
+    : null;
+
+  const params = [];
+  let sql = `
+    SELECT o.*, c.name AS captain_name, c.captain_number
+    FROM \`orders\` o
+    LEFT JOIN captains c ON c.id = o.captain_id
+    WHERE o.status = 'done'
+      AND o.payment_type IN ('credit', 'transfer')
+  `;
+  if (captain_id) {
+    sql += ' AND o.captain_id = ?';
+    params.push(captain_id);
+  }
+  if (typeFilter) {
+    sql += ' AND o.payment_type = ?';
+    params.push(typeFilter);
+  }
+  sql += ' ORDER BY COALESCE(o.done_at, o.updated_at) DESC';
+
+  const orders = await queryAll(sql, params);
+  const inRange = orders.filter((order) =>
+    inDateRange(order.done_at || order.updated_at || order.created_at, range.from, range.to)
+  );
+
+  if (!inRange.length) {
+    return {
+      period,
+      from: range.from,
+      to: range.to,
+      payment_type: typeFilter || 'all',
+      rows: [],
+      summary: {
+        orders_count: 0,
+        total_amount: 0,
+        credit_count: 0,
+        credit_amount: 0,
+        transfer_count: 0,
+        transfer_amount: 0,
+        posted_count: 0,
+        unposted_count: 0,
+      },
+    };
+  }
+
+  const placeholders = inRange.map(() => '?').join(', ');
+  const itemRows = await queryAll(
+    `SELECT oi.order_id, oi.store_id, oi.store_name, oi.invoice_amount, oi.is_external,
+            o.payment_type, o.delivery_fee, o.done_at, o.updated_at
+     FROM order_items oi
+     INNER JOIN \`orders\` o ON o.id = oi.order_id
+     WHERE oi.order_id IN (${placeholders})`,
+    inRange.map((order) => order.id)
+  );
+  const itemsByOrder = groupItemsByOrderId(itemRows);
+  const discountsList = await getAllDiscountsCached();
+  const orderDisplayMap = await buildOrderDisplayNumberMap();
+
+  const rows = inRange.map((order) => {
+    const paymentType = normalizePaymentType(order.payment_type);
+    const summary = summarizePostedOrder(order, itemsByOrder.get(order.id) || [], discountsList);
+    const amount = pricingTransfersDebts(order, summary);
+    const orderDate = toDateKey(order.done_at || order.updated_at || order.created_at);
+    return {
+      id: order.id,
+      order_number: String(orderDisplayMap.get(order.id) || ''),
+      order_date: orderDate,
+      done_at: order.done_at || order.updated_at || null,
+      captain_id: order.captain_id || null,
+      captain_name: order.captain_name || 'بدون تعيين',
+      captain_number: order.captain_number || '',
+      customer_name: order.customer_name || '',
+      customer_phone: order.customer_phone || '',
+      payment_type: paymentType,
+      payment_label: PAYMENT_LABELS[paymentType] || paymentType,
+      amount: num(amount),
+      invoice_total_net: num(summary.invoice_total_net),
+      external_total: num(summary.external_total),
+      delivery_fee: num(summary.delivery_fee),
+      finance_posted: Boolean(order.finance_posted_at),
+      finance_posted_at: order.finance_posted_at || null,
+    };
+  }).filter((row) => row.amount > 0);
+
+  const summary = rows.reduce((acc, row) => {
+    acc.orders_count += 1;
+    acc.total_amount = num(acc.total_amount + row.amount);
+    if (row.payment_type === 'credit') {
+      acc.credit_count += 1;
+      acc.credit_amount = num(acc.credit_amount + row.amount);
+    } else {
+      acc.transfer_count += 1;
+      acc.transfer_amount = num(acc.transfer_amount + row.amount);
+    }
+    if (row.finance_posted) acc.posted_count += 1;
+    else acc.unposted_count += 1;
+    return acc;
+  }, {
+    orders_count: 0,
+    total_amount: 0,
+    credit_count: 0,
+    credit_amount: 0,
+    transfer_count: 0,
+    transfer_amount: 0,
+    posted_count: 0,
+    unposted_count: 0,
+  });
+
+  return {
+    period,
+    from: range.from,
+    to: range.to,
+    payment_type: typeFilter || 'all',
+    rows,
+    summary,
+  };
+}

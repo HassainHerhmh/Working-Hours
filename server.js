@@ -1123,6 +1123,22 @@ app.get('/api/reports/stores', async (req, res) => {
   res.json(await finance.getStoresReport({ period, date, from, to }));
 });
 
+app.get('/api/reports/credit-transfer', async (req, res) => {
+  try {
+    const { period = 'day', date, from, to, captain_id, payment_type } = req.query;
+    res.json(await finance.getCreditTransferReport({
+      period,
+      date,
+      from,
+      to,
+      captain_id,
+      payment_type,
+    }));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 app.get('/api/reports/account-statement', async (req, res) => {
   try {
     const { period = 'month', date, from, to, captain_id, store_id, mode, include_opening } = req.query;
