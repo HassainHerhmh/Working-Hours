@@ -1214,16 +1214,15 @@ export async function listAllVouchers(captainId) {
 }
 
 function getReportRange(period = 'day', date, from, to) {
-  if (period === 'range' && from && to) {
-    const safeFrom = String(from).slice(0, 10);
-    const safeTo = String(to).slice(0, 10);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(safeFrom) && /^\d{4}-\d{2}-\d{2}$/.test(safeTo)) {
-      return safeFrom <= safeTo
-        ? { from: safeFrom, to: safeTo }
-        : { from: safeTo, to: safeFrom };
-    }
+  const safeFrom = from ? String(from).slice(0, 10) : '';
+  const safeTo = to ? String(to).slice(0, 10) : '';
+  // Prefer explicit from/to whenever both are valid so UI and API always agree.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(safeFrom) && /^\d{4}-\d{2}-\d{2}$/.test(safeTo)) {
+    return safeFrom <= safeTo
+      ? { from: safeFrom, to: safeTo }
+      : { from: safeTo, to: safeFrom };
   }
-  return getDateRange(['day', 'week', 'month'].includes(period) ? period : 'day', date);
+  return getDateRange(['day', 'week', 'month', 'range'].includes(period) ? (period === 'range' ? 'day' : period) : 'day', date);
 }
 
 export async function getSalesReport({ period = 'day', date, from, to, captain_id }) {
@@ -1551,22 +1550,22 @@ export async function getCaptainAccountStatement({
 
   if (include_opening) {
     const prev = await buildPreviousBalance(captain_id, range, config, allVouchers);
-    if (prev) {
-      openingBalance = num(-prev.remaining_for_company);
-      const openingDate = prev.to || dayBeforeKey(range.from);
-      events.push({
-        sort_key: `${openingDate}T00:00:00.000|00`,
-        journal_date: openingDate,
-        reference_type: 'opening',
-        reference_id: '',
-        account_name: captain.name,
-        debit: openingBalance < 0 ? Math.abs(openingBalance) : 0,
-        credit: openingBalance >= 0 ? openingBalance : 0,
-        notes: `رصيد سابق حتى ${openingDate}`,
-        is_opening: true,
-        preset_balance: openingBalance,
-      });
-    }
+    openingBalance = prev ? num(-prev.remaining_for_company) : 0;
+    const openingDate = prev?.to || dayBeforeKey(range.from);
+    events.push({
+      sort_key: `${openingDate}T00:00:00.000|00`,
+      journal_date: openingDate,
+      reference_type: 'opening',
+      reference_id: '',
+      account_name: captain.name,
+      debit: openingBalance < 0 ? Math.abs(openingBalance) : 0,
+      credit: openingBalance >= 0 ? openingBalance : 0,
+      notes: openingBalance === 0
+        ? `رصيد سابق حتى ${openingDate} (صفر)`
+        : `رصيد سابق حتى ${openingDate}`,
+      is_opening: true,
+      preset_balance: openingBalance,
+    });
   }
 
   if (mode === 'detailed') {
@@ -1954,21 +1953,21 @@ export async function getStoreAccountStatement({
     openingBalance = invoiceRows
       .filter((row) => isBeforeDate(row.sales_date || row.created_at, range.from))
       .reduce((sum, row) => sum + num(row.amount), 0);
-    if (openingBalance !== 0 || invoiceRows.some((row) => isBeforeDate(row.sales_date || row.created_at, range.from))) {
-      const openingDate = dayBeforeKey(range.from);
-      events.push({
-        sort_key: `${openingDate}T00:00:00.000|00`,
-        journal_date: openingDate,
-        reference_type: 'opening',
-        reference_id: '',
-        account_name: store.name,
-        debit: 0,
-        credit: openingBalance,
-        notes: `رصيد سابق حتى ${openingDate}`,
-        is_opening: true,
-        preset_balance: openingBalance,
-      });
-    }
+    const openingDate = dayBeforeKey(range.from);
+    events.push({
+      sort_key: `${openingDate}T00:00:00.000|00`,
+      journal_date: openingDate,
+      reference_type: 'opening',
+      reference_id: '',
+      account_name: store.name,
+      debit: 0,
+      credit: openingBalance,
+      notes: openingBalance === 0
+        ? `رصيد سابق حتى ${openingDate} (صفر)`
+        : `رصيد سابق حتى ${openingDate}`,
+      is_opening: true,
+      preset_balance: openingBalance,
+    });
   }
 
   const periodInvoices = invoiceRows.filter((row) =>
