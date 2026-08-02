@@ -10,10 +10,28 @@ export function normalizeDiscountPercent(value) {
 export function normalizeDateKey(value) {
   if (!value) return null;
   const raw = String(value).trim();
-  if (/^\d{4}-\d{2}-\d{2}/.test(raw)) return raw.slice(0, 10);
-  const d = new Date(raw.includes(' ') && !raw.includes('T') ? raw.replace(' ', 'T') : raw);
-  if (Number.isNaN(d.getTime())) return null;
-  return d.toISOString().slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+
+  // Datetime without timezone: treat the leading calendar date as the business day.
+  if (/^\d{4}-\d{2}-\d{2}[ T]/.test(raw) && !/[zZ]|[+-]\d{2}:?\d{2}$/.test(raw)) {
+    return raw.slice(0, 10);
+  }
+
+  const parsed = new Date(raw.includes(' ') && !raw.includes('T') ? raw.replace(' ', 'T') : raw);
+  if (Number.isNaN(parsed.getTime())) return null;
+
+  // Normalize to Asia/Aden so discount dates match Yemen sales days.
+  const yemenParts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Aden',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(parsed);
+  const y = yemenParts.find((p) => p.type === 'year')?.value;
+  const m = yemenParts.find((p) => p.type === 'month')?.value;
+  const d = yemenParts.find((p) => p.type === 'day')?.value;
+  if (y && m && d) return `${y}-${m}-${d}`;
+  return parsed.toISOString().slice(0, 10);
 }
 
 export function isDiscountActiveForDate(record, orderDate) {
@@ -50,7 +68,8 @@ export function pickDiscountsForDate(discounts, orderDate) {
 
     const type = String(row.discount_type || 'store').toLowerCase();
     if (type === 'store' && row.store_id) {
-      storeMap.set(row.store_id, Math.max(storeMap.get(row.store_id) || 0, pct));
+      const storeId = String(row.store_id);
+      storeMap.set(storeId, Math.max(storeMap.get(storeId) || 0, pct));
     } else if (type === 'delivery') {
       deliveryPercent = Math.max(deliveryPercent, pct);
     }

@@ -138,7 +138,7 @@ async function attachItems(orders) {
       orderDiscountCache.set(row.order_id, pickDiscountsForDate(discountsList, orderDate));
     }
     const { storeMap } = orderDiscountCache.get(row.order_id);
-    const effectiveDiscount = isExternal ? 0 : (storeMap.get(row.store_id) || 0);
+    const effectiveDiscount = isExternal ? 0 : (storeMap.get(String(row.store_id)) || 0);
     const pricing = itemStorePricing(
       row.invoice_amount,
       isExternal,
