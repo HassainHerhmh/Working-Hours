@@ -34,7 +34,7 @@ function normalizePaymentType(v) {
 }
 
 function toOrderSalesDate(order) {
-  const raw = order?.done_at || order?.updated_at || order?.created_at;
+  const raw = order?.created_at || order?.done_at || order?.updated_at;
   if (!raw) return '';
   const value = String(raw);
   const d = new Date(value.includes('T') ? value : value.replace(' ', 'T'));
@@ -133,7 +133,7 @@ async function attachItems(orders) {
   for (const row of rows) {
     const current = map.get(row.order_id) || [];
     const isExternal = Boolean(row.is_external);
-    const orderDate = row.done_at || row.updated_at || row.created_at;
+    const orderDate = row.created_at || row.done_at || row.updated_at;
     if (!orderDiscountCache.has(row.order_id)) {
       orderDiscountCache.set(row.order_id, pickDiscountsForDate(discountsList, orderDate));
     }
@@ -178,7 +178,7 @@ async function attachItems(orders) {
   }
   return orders.map((order) => {
     const items = map.get(order.id) || [];
-    const orderDate = order.done_at || order.updated_at || order.created_at;
+    const orderDate = order.created_at || order.done_at || order.updated_at;
     const { deliveryPercent } = orderDiscountCache.get(order.id)
       || pickDiscountsForDate(discountsList, orderDate);
     const pricing = summarizeOrderPricing(items, order.delivery_fee, deliveryPercent);
