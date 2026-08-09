@@ -218,11 +218,8 @@ async function connectMySQL() {
       return nextPool;
     } catch (err) {
       errors.push(`${label}: ${err.message}`);
-      if (err.code === 'ENOTFOUND' || err.code === 'ECONNREFUSED' || err.code === 'ETIMEDOUT') {
-        console.warn(`⚠️ MySQL ${label} failed (${err.code}), trying next...`);
-        continue;
-      }
-      throw err;
+      console.warn(`⚠️ MySQL ${label} failed (${err.code || 'error'}), trying next...`);
+      continue;
     }
   }
 
