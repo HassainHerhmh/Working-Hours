@@ -168,12 +168,9 @@ function getHostingerConnectionCandidates(base) {
     add('MYSQL_SOCKET', { ...base, socketPath: process.env.MYSQL_SOCKET });
   }
 
-  for (const socketPath of ['/var/run/mysqld/mysqld.sock', '/tmp/mysql.sock', '/var/lib/mysql/mysql.sock']) {
-    add(`socket:${socketPath}`, { ...base, socketPath });
-  }
-
-  if (preferredHost && !['localhost', '127.0.0.1', '::1'].includes(preferredHost)) {
+  if (preferredHost) {
     add(preferredHost, { ...base, host: preferredHost });
+    return candidates;
   }
 
   add('127.0.0.1', { ...base, host: '127.0.0.1' });
@@ -1168,6 +1165,14 @@ export async function migrateCaptainUsernameColumn() {
 
 export async function migrateOrderInvoiceAttachmentsTable() {
   if (isMySQL) {
+    const exists = await queryOne(
+      `SELECT 1 AS ok
+       FROM information_schema.TABLES
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'order_invoice_attachments'
+       LIMIT 1`
+    );
+    if (exists) return;
+
     await execute(`
       CREATE TABLE IF NOT EXISTS order_invoice_attachments (
         id VARCHAR(36) PRIMARY KEY,
@@ -1178,9 +1183,9 @@ export async function migrateOrderInvoiceAttachmentsTable() {
         mime_type VARCHAR(100) DEFAULT '',
         file_data LONGBLOB NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
-        FOREIGN KEY (captain_id) REFERENCES captains(id) ON DELETE CASCADE
-      )
+        INDEX idx_order_invoice_order (order_id),
+        INDEX idx_order_invoice_captain (captain_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
   } else {
     sqlite.exec(`
@@ -1200,6 +1205,14 @@ export async function migrateOrderInvoiceAttachmentsTable() {
 
 export async function migrateChatMessagesTable() {
   if (isMySQL) {
+    const exists = await queryOne(
+      `SELECT 1 AS ok
+       FROM information_schema.TABLES
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'chat_messages'
+       LIMIT 1`
+    );
+    if (exists) return;
+
     await execute(`
       CREATE TABLE IF NOT EXISTS chat_messages (
         id VARCHAR(36) PRIMARY KEY,
@@ -1212,8 +1225,8 @@ export async function migrateChatMessagesTable() {
         attachment_name VARCHAR(255) NULL,
         attachment_mime VARCHAR(100) NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (captain_id) REFERENCES captains(id) ON DELETE CASCADE
-      )
+        INDEX idx_chat_messages_captain (captain_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
   } else {
     sqlite.exec(`
