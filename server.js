@@ -1167,7 +1167,11 @@ app.get('/api/orders/customers', async (req, res) => {
 });
 
 app.get('/api/orders', async (req, res) => {
-  res.json(await orders.listOrders({ status: req.query.status }));
+  res.json(await orders.listOrders({
+    status: req.query.status,
+    period: req.query.period,
+    date: req.query.date,
+  }));
 });
 
 app.post('/api/orders', async (req, res) => {
@@ -1189,7 +1193,11 @@ app.put('/api/orders/:id', async (req, res) => {
 
 app.get('/api/captain/orders/:captainId', async (req, res) => {
   try {
-    res.json(await orders.listCaptainOrders(req.params.captainId, { status: req.query.status }));
+    res.json(await orders.listCaptainOrders(req.params.captainId, {
+      status: req.query.status,
+      period: req.query.period,
+      date: req.query.date,
+    }));
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -1629,8 +1637,8 @@ async function start() {
   await initDb();
   await seedIfEmpty();
 
-  app.listen(PORT, () => {
-    console.log(`🚀 Captain Platform API running on http://localhost:${PORT} [${getDbType()}]`);
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 Captain Platform API running on http://0.0.0.0:${PORT} [${getDbType()}]`);
   });
 }
 

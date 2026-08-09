@@ -11,7 +11,10 @@ export const isMySQL = Boolean(
   process.env.MYSQL_URL ||
   process.env.MYSQL_PUBLIC_URL ||
   process.env.DATABASE_URL ||
-  process.env.MYSQLHOST
+  process.env.MYSQLHOST ||
+  process.env.MYSQL_HOST ||
+  process.env.DB_HOST ||
+  process.env.DB_USER
 );
 
 let pool = null;
@@ -140,12 +143,13 @@ const SCHEMA_SQLITE = `
 const SCHEMA_MYSQL = fs.readFileSync(path.join(__dirname, 'schema.mysql.sql'), 'utf8');
 
 function getMySQLHostConfig() {
+  const host = process.env.MYSQLHOST || process.env.MYSQL_HOST || process.env.DB_HOST || '127.0.0.1';
   return {
-    host: process.env.MYSQLHOST || process.env.MYSQL_HOST || 'localhost',
-    port: Number(process.env.MYSQLPORT || process.env.MYSQL_PORT || 3306),
-    user: process.env.MYSQLUSER || process.env.MYSQL_USER || 'root',
-    password: process.env.MYSQLPASSWORD || process.env.MYSQL_PASSWORD || '',
-    database: process.env.MYSQLDATABASE || process.env.MYSQL_DATABASE || 'railway',
+    host: host === 'localhost' ? '127.0.0.1' : host,
+    port: Number(process.env.MYSQLPORT || process.env.MYSQL_PORT || process.env.DB_PORT || 3306),
+    user: process.env.MYSQLUSER || process.env.MYSQL_USER || process.env.DB_USER || 'root',
+    password: process.env.MYSQLPASSWORD || process.env.MYSQL_PASSWORD || process.env.DB_PASSWORD || '',
+    database: process.env.MYSQLDATABASE || process.env.MYSQL_DATABASE || process.env.DB_NAME || 'railway',
     ssl: process.env.MYSQLSSL === 'false' ? undefined : { rejectUnauthorized: false },
     waitForConnections: true,
     connectionLimit: 10,
@@ -160,7 +164,12 @@ function getMySQLConnectionCandidates() {
   if (process.env.DATABASE_URL?.startsWith('mysql')) add('DATABASE_URL', process.env.DATABASE_URL);
   // Public TCP proxy — works when internal DNS (mysql.railway.internal) is unreachable
   if (process.env.MYSQL_PUBLIC_URL) add('MYSQL_PUBLIC_URL', process.env.MYSQL_PUBLIC_URL);
-  if (process.env.MYSQLHOST || process.env.MYSQL_HOST) add('MYSQLHOST', getMySQLHostConfig());
+  if (
+    process.env.MYSQLHOST
+    || process.env.MYSQL_HOST
+    || process.env.DB_HOST
+    || process.env.DB_USER
+  ) add('MYSQLHOST', getMySQLHostConfig());
 
   return candidates;
 }

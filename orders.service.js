@@ -1,5 +1,71 @@
 import { v4 as uuid } from 'uuid';
 import { yemenDateKey } from './attendance.service.js';
+
+const ACTIVE_CAPTAIN_STATUSES = ['assigned', 'in_progress', 'on_delivery'];
+
+function shiftDateKey(dateKey, days) {
+  const [y, m, d] = String(dateKey || '').split('-').map(Number);
+  if (!y || !m || !d) return yemenDateKey();
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() + days);
+  return yemenDateKey(dt);
+}
+
+function orderCreatedDateSql(column = 'o.created_at') {
+  if (isMySQL) {
+    return `DATE(CONVERT_TZ(${column}, '+00:00', '+03:00'))`;
+  }
+  return `date(${column}, '+3 hours')`;
+}
+
+function appendOrderDateFilter(where, params, { period, date } = {}) {
+  if (!period || period === 'all') return { where, params };
+
+  const refDate = str(date) || yemenDateKey();
+  const dateSql = orderCreatedDateSql();
+  const connector = where ? ' AND ' : ' WHERE ';
+
+  if (period === 'day') {
+    return {
+      where: `${where}${connector}${dateSql} = ?`,
+      params: [...params, refDate],
+    };
+  }
+
+  if (period === 'week') {
+    return {
+      where: `${where}${connector}${dateSql} >= ?`,
+      params: [...params, shiftDateKey(refDate, -6)],
+    };
+  }
+
+  return { where, params };
+}
+
+function appendCaptainDateFilter(where, params, { period = 'day', date } = {}) {
+  if (!period || period === 'all') return { where, params };
+
+  const refDate = str(date) || yemenDateKey();
+  const dateSql = orderCreatedDateSql();
+  const activeList = ACTIVE_CAPTAIN_STATUSES.map((status) => `'${status}'`).join(', ');
+  const connector = where ? ' AND ' : ' WHERE ';
+
+  if (period === 'day') {
+    return {
+      where: `${where}${connector}(${dateSql} = ? OR o.status IN (${activeList}))`,
+      params: [...params, refDate],
+    };
+  }
+
+  if (period === 'week') {
+    return {
+      where: `${where}${connector}(${dateSql} >= ? OR o.status IN (${activeList}))`,
+      params: [...params, shiftDateKey(refDate, -6)],
+    };
+  }
+
+  return { where, params };
+}
 import { execute, queryAll, queryOne, isMySQL } from './database.js';
 import { postCompletedOrderFinance, reconcileCaptainDayFinance } from './finance.service.js';
 import { itemStorePricing, summarizeOrderPricing, pickDiscountsForDate } from './orderPricing.js';
@@ -209,13 +275,14 @@ export async function listCustomers(queryText = '', { limit = 500 } = {}) {
   return rows;
 }
 
-export async function listOrders({ status } = {}) {
-  const params = [];
+export async function listOrders({ status, period, date } = {}) {
+  let params = [];
   let where = '';
   if (status) {
     where = 'WHERE o.status = ?';
     params.push(normalizeStatus(status));
   }
+  ({ where, params } = appendOrderDateFilter(where, params, { period, date }));
   const rows = await queryAll(
     `SELECT o.*, c.name AS captain_name, c.captain_number
      FROM \`orders\` o
@@ -227,8 +294,8 @@ export async function listOrders({ status } = {}) {
   return attachItems(rows);
 }
 
-export async function listCaptainOrders(captainId, { status } = {}) {
-  const params = [captainId];
+export async function listCaptainOrders(captainId, { status, period = 'day', date } = {}) {
+  let params = [captainId];
   let where = 'WHERE o.captain_id = ?';
   if (status && status !== 'all') {
     where += ' AND o.status = ?';
@@ -236,6 +303,7 @@ export async function listCaptainOrders(captainId, { status } = {}) {
   } else {
     where += " AND o.status != 'new'";
   }
+  ({ where, params } = appendCaptainDateFilter(where, params, { period, date }));
   const rows = await queryAll(
     `SELECT o.*
      FROM \`orders\` o
