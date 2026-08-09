@@ -64,6 +64,7 @@ import {
   checkPlatformLoginAllowed,
   recordPlatformLoginFailure,
   clearPlatformLoginFailures,
+  clearAllPlatformLoginFailures,
   wait as loginWait,
 } from './loginProtection.js';
 
@@ -876,6 +877,16 @@ app.get('/api/sms/simulator/inbox/:captainId', async (req, res) => {
 });
 
 // ─── Platform Admin Login ───────────────────────────────────
+
+app.post('/api/platform-auth/unlock', (req, res) => {
+  const token = String(req.body?.token || req.headers['x-unlock-token'] || '');
+  const expected = String(process.env.LOGIN_UNLOCK_TOKEN || 'captain-unlock-2026');
+  if (!token || token !== expected) {
+    return res.status(403).json({ error: 'رمز فك الحظر غير صحيح' });
+  }
+  clearAllPlatformLoginFailures();
+  res.json({ ok: true });
+});
 
 app.post('/api/platform-auth/login', async (req, res) => {
   const { username, password, website } = req.body || {};

@@ -1,7 +1,7 @@
 const WINDOW_MS = 15 * 60 * 1000;
-const LOCK_MS = 30 * 60 * 1000;
-const MAX_ACCOUNT_ATTEMPTS = 5;
-const MAX_IP_ATTEMPTS = 25;
+const LOCK_MS = 5 * 60 * 1000;
+const MAX_ACCOUNT_ATTEMPTS = 8;
+const MAX_IP_ATTEMPTS = 200;
 const BASE_DELAY_MS = 800;
 const MAX_DELAY_MS = 5000;
 
@@ -109,6 +109,11 @@ export function clearPlatformLoginFailures(req, username) {
   const ip = getClientIp(req);
   const accountKey = `${ip}|${normalizeUsername(username)}`;
   accountAttempts.delete(accountKey);
+}
+
+export function clearAllPlatformLoginFailures() {
+  accountAttempts.clear();
+  ipAttempts.clear();
 }
 
 export function wait(ms) {
