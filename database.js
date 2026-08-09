@@ -142,10 +142,8 @@ const SCHEMA_SQLITE = `
 
 const SCHEMA_MYSQL = fs.readFileSync(path.join(__dirname, 'schema.mysql.sql'), 'utf8');
 
-function getMySQLHostConfig() {
-  const host = process.env.MYSQLHOST || process.env.MYSQL_HOST || process.env.DB_HOST || 'localhost';
+function getMySQLBaseConfig() {
   return {
-    host,
     port: Number(process.env.MYSQLPORT || process.env.MYSQL_PORT || process.env.DB_PORT || 3306),
     user: process.env.MYSQLUSER || process.env.MYSQL_USER || process.env.DB_USER || 'root',
     password: process.env.MYSQLPASSWORD || process.env.MYSQL_PASSWORD || process.env.DB_PASSWORD || '',
@@ -154,6 +152,32 @@ function getMySQLHostConfig() {
     waitForConnections: true,
     connectionLimit: 10,
   };
+}
+
+function getMySQLHostConfig() {
+  const host = process.env.MYSQLHOST || process.env.MYSQL_HOST || process.env.DB_HOST || 'localhost';
+  return { ...getMySQLBaseConfig(), host };
+}
+
+function getHostingerConnectionCandidates(base) {
+  const candidates = [];
+  const add = (label, config) => candidates.push({ label, config });
+  const preferredHost = process.env.MYSQLHOST || process.env.MYSQL_HOST || process.env.DB_HOST;
+
+  if (process.env.MYSQL_SOCKET) {
+    add('MYSQL_SOCKET', { ...base, socketPath: process.env.MYSQL_SOCKET });
+  }
+
+  for (const socketPath of ['/var/run/mysqld/mysqld.sock', '/tmp/mysql.sock', '/var/lib/mysql/mysql.sock']) {
+    add(`socket:${socketPath}`, { ...base, socketPath });
+  }
+
+  if (preferredHost && !['localhost', '127.0.0.1', '::1'].includes(preferredHost)) {
+    add(preferredHost, { ...base, host: preferredHost });
+  }
+
+  add('127.0.0.1', { ...base, host: '127.0.0.1' });
+  return candidates;
 }
 
 function getMySQLConnectionCandidates() {
@@ -169,7 +193,12 @@ function getMySQLConnectionCandidates() {
     || process.env.MYSQL_HOST
     || process.env.DB_HOST
     || process.env.DB_USER
-  ) add('MYSQLHOST', getMySQLHostConfig());
+  ) {
+    const base = getMySQLBaseConfig();
+    for (const candidate of getHostingerConnectionCandidates(base)) {
+      add(candidate.label, candidate.config);
+    }
+  }
 
   return candidates;
 }
