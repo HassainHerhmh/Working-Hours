@@ -73,7 +73,25 @@ const PORT = process.env.PORT || 3001;
 const uploadsDir = path.join(__dirname, 'uploads');
 fs.mkdirSync(uploadsDir, { recursive: true });
 
-app.use(cors());
+const allowedOriginPatterns = [
+  /^https:\/\/([a-z0-9-]+\.)*vercel\.app$/i,
+  /^http:\/\/localhost(:\d+)?$/,
+  /^http:\/\/127\.0\.0\.1(:\d+)?$/,
+  /^https:\/\/([a-z0-9-]+\.)*hostingersite\.com$/i,
+];
+
+function resolveCorsOrigin(origin) {
+  if (!origin) return true;
+  if (allowedOriginPatterns.some((pattern) => pattern.test(origin))) return origin;
+  return true;
+}
+
+app.use(cors({
+  origin: (origin, callback) => callback(null, resolveCorsOrigin(origin)),
+  methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
+app.options('*', cors());
 app.use(express.json());
 app.use('/uploads', express.static(uploadsDir));
 
