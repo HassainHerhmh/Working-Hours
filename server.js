@@ -1445,6 +1445,45 @@ app.get('/api/chat/threads', async (_req, res) => {
   }
 });
 
+app.get('/api/chat/unread-summary', async (_req, res) => {
+  try {
+    const rows = await queryAll(`
+      SELECT c.id, c.name, c.captain_number,
+        (
+          SELECT message FROM chat_messages
+          WHERE captain_id = c.id
+          ORDER BY created_at DESC
+          LIMIT 1
+        ) AS last_message,
+        (
+          SELECT attachment_name FROM chat_messages
+          WHERE captain_id = c.id AND attachment_path IS NOT NULL AND attachment_path != ''
+          ORDER BY created_at DESC
+          LIMIT 1
+        ) AS last_attachment_name,
+        (
+          SELECT created_at FROM chat_messages
+          WHERE captain_id = c.id
+          ORDER BY created_at DESC
+          LIMIT 1
+        ) AS last_message_at,
+        (
+          SELECT COUNT(*) FROM chat_messages
+          WHERE captain_id = c.id
+            AND sender_type = 'captain'
+            AND read_by_platform_at IS NULL
+        ) AS unread_count
+      FROM captains c
+      HAVING unread_count > 0
+      ORDER BY last_message_at DESC
+    `);
+    res.json(rows);
+  } catch (err) {
+    console.error('chat/unread-summary error:', err);
+    res.status(500).json({ error: 'تعذر تحميل إشعارات الدردشة' });
+  }
+});
+
 app.get('/api/chat/:captainId', async (req, res) => {
   const rows = await queryAll(
     `SELECT id, captain_id, sender_type, sender_id, sender_name, message,
