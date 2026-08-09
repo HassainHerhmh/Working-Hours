@@ -150,7 +150,7 @@ function getMySQLBaseConfig() {
     database: process.env.MYSQLDATABASE || process.env.MYSQL_DATABASE || process.env.DB_NAME || 'railway',
     ssl: process.env.MYSQLSSL === 'false' ? undefined : { rejectUnauthorized: false },
     waitForConnections: true,
-    connectionLimit: 10,
+    connectionLimit: 5,
   };
 }
 
@@ -1185,7 +1185,7 @@ export async function migrateOrderInvoiceAttachmentsTable() {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         INDEX idx_order_invoice_order (order_id),
         INDEX idx_order_invoice_captain (captain_id)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
     `);
   } else {
     sqlite.exec(`
@@ -1226,7 +1226,7 @@ export async function migrateChatMessagesTable() {
         attachment_mime VARCHAR(100) NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         INDEX idx_chat_messages_captain (captain_id)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
     `);
   } else {
     sqlite.exec(`
@@ -1575,6 +1575,32 @@ export async function migrateFinanceDiscountsTable() {
       'UPDATE finance_stores SET discount_percent = 0, discount_from_date = NULL WHERE id = ?',
       [store.id]
     );
+  }
+}
+
+const MYSQL_TARGET_COLLATION = 'utf8mb4_0900_ai_ci';
+
+export async function migrateMySQLTableCollations() {
+  if (!isMySQL) return;
+
+  const tables = await queryAll(`
+    SELECT TABLE_NAME, TABLE_COLLATION
+    FROM information_schema.TABLES
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_TYPE = 'BASE TABLE'
+      AND TABLE_COLLATION IS NOT NULL
+      AND TABLE_COLLATION != ?
+  `, [MYSQL_TARGET_COLLATION]);
+
+  for (const { TABLE_NAME } of tables) {
+    try {
+      await execute(
+        `ALTER TABLE \`${TABLE_NAME}\` CONVERT TO CHARACTER SET utf8mb4 COLLATE ${MYSQL_TARGET_COLLATION}`
+      );
+      console.log(`✅ MySQL collation updated: ${TABLE_NAME}`);
+    } catch (err) {
+      console.warn(`⚠️ MySQL collation skipped for ${TABLE_NAME}: ${err.message}`);
+    }
   }
 }
 

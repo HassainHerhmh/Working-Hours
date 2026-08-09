@@ -49,6 +49,7 @@ import {
   migrateChatMessageAttachmentColumns,
   migrateFinanceStoreDiscountColumn,
   migrateChatMessageReadColumns,
+  migrateMySQLTableCollations,
   toDbDateTime,
 } from './database.js';
 import { getUserPermissions, saveUserPermissions, resolveUserPermissions, createFullPermissions } from './permissions.js';
@@ -91,7 +92,6 @@ app.use(cors({
   methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
-app.options('*', cors());
 app.use(express.json());
 app.use('/uploads', express.static(uploadsDir));
 
@@ -357,6 +357,7 @@ async function seedIfEmpty() {
   await backfillStoredMediaData();
   await migrateFinanceStoreDiscountColumn();
   await migrateChatMessageReadColumns();
+  await migrateMySQLTableCollations();
   const captainCount = Number((await queryOne('SELECT COUNT(*) as c FROM captains')).c);
   if (captainCount === 0) {
     const captains = [
@@ -1390,7 +1391,8 @@ app.delete('/api/captain/orders/:captainId/:orderId/invoices/:invoiceId', async 
 });
 
 app.get('/api/chat/threads', async (_req, res) => {
-  const rows = await queryAll(`
+  try {
+    const rows = await queryAll(`
     SELECT c.id, c.name, c.captain_number, c.photo,
       (
         SELECT message FROM chat_messages
@@ -1425,7 +1427,11 @@ app.get('/api/chat/threads', async (_req, res) => {
     FROM captains c
     ORDER BY last_message_at IS NULL, last_message_at DESC, c.name ASC
   `);
-  res.json(rows);
+    res.json(rows);
+  } catch (err) {
+    console.error('chat/threads error:', err);
+    res.status(500).json({ error: 'تعذر تحميل المحادثات' });
+  }
 });
 
 app.get('/api/chat/:captainId', async (req, res) => {
