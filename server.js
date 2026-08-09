@@ -332,11 +332,11 @@ async function seedIfEmpty() {
   await migrateUsersPermissionsColumn();
   await migrateOrderInvoiceAttachmentsTable();
   await migrateOrderInvoiceAttachmentDataColumn();
+  await migrateChatMessagesTable();
+  await migrateChatMessageAttachmentColumns();
   await migrateStoredMediaColumns();
   await backfillOrderInvoiceAttachmentData();
   await backfillStoredMediaData();
-  await migrateChatMessagesTable();
-  await migrateChatMessageAttachmentColumns();
   await migrateFinanceStoreDiscountColumn();
   await migrateChatMessageReadColumns();
   const captainCount = Number((await queryOne('SELECT COUNT(*) as c FROM captains')).c);
