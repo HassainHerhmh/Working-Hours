@@ -403,16 +403,6 @@ export async function updateOrder(orderId, payload) {
   const existing = await queryOne('SELECT * FROM `orders` WHERE id = ?', [orderId]);
   if (!existing) throw new Error('الطلب غير موجود');
 
-  const existingStatus = normalizeStatus(existing.status);
-  const isLocked = existingStatus === 'done' || existingStatus === 'cancelled';
-  if (
-    isLocked
-    && payload.captain_id !== undefined
-    && (payload.captain_id || null) !== (existing.captain_id || null)
-  ) {
-    throw new Error('لا يمكن تغيير الكابتن لطلب مكتمل أو ملغي');
-  }
-
   const customerName = str(payload.customer_name) || existing.customer_name;
   const customerPhone = str(payload.customer_phone) || existing.customer_phone || '';
   const customer = await upsertCustomer({
@@ -492,8 +482,13 @@ export async function updateOrder(orderId, payload) {
     const full = await queryOne('SELECT * FROM `orders` WHERE id = ?', [orderId]);
     const [enriched] = await attachItems([full]);
     await postCompletedOrderFinance(enriched);
-  } else if (existing.finance_posted_at && normalizeStatus(existing.status) === 'done' && existing.captain_id) {
-    await reconcileCaptainDayFinance(existing.captain_id, toOrderSalesDate(existing));
+  } else if (existing.finance_posted_at && normalizeStatus(existing.status) === 'done') {
+    if (existing.captain_id) {
+      await reconcileCaptainDayFinance(existing.captain_id, toOrderSalesDate(existing));
+    }
+    if (nextCaptainId && nextCaptainId !== prevCaptainId) {
+      await reconcileCaptainDayFinance(nextCaptainId, toOrderSalesDate(existing));
+    }
   }
 
   return updated;
