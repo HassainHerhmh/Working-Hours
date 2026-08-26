@@ -274,14 +274,18 @@ export async function listCustomers(queryText = '', { limit = 500 } = {}) {
   const q = `%${str(queryText)}%`;
   const maxRows = Math.min(Math.max(Number(limit) || 500, 1), 1000);
   const rows = await queryAll(
-    `SELECT *
-     FROM customers
-     WHERE name LIKE ? OR phone LIKE ? OR address_text LIKE ?
-     ORDER BY updated_at DESC, created_at DESC
+    `SELECT c.*,
+            (SELECT COUNT(*) FROM \`orders\` o WHERE o.customer_id = c.id) AS order_count
+     FROM customers c
+     WHERE c.name LIKE ? OR c.phone LIKE ? OR c.address_text LIKE ?
+     ORDER BY c.updated_at DESC, c.created_at DESC
      LIMIT ${maxRows}`,
     [q, q, q]
   );
-  return rows;
+  return rows.map((row) => ({
+    ...row,
+    order_count: Number(row.order_count || 0),
+  }));
 }
 
 export async function updateCustomer(customerId, payload = {}) {

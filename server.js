@@ -50,6 +50,7 @@ import {
   migrateFinanceStoreDiscountColumn,
   migrateChatMessageReadColumns,
   migrateMySQLTableCollations,
+  migrateBackupConfigTable,
   toDbDateTime,
 } from './database.js';
 import { getUserPermissions, saveUserPermissions, resolveUserPermissions, createFullPermissions } from './permissions.js';
@@ -60,6 +61,7 @@ import * as captainGroups from './captainGroups.service.js';
 import * as discounts from './discounts.service.js';
 import * as finance from './finance.service.js';
 import * as orders from './orders.service.js';
+import * as backup from './backup.service.js';
 import {
   checkPlatformLoginAllowed,
   recordPlatformLoginFailure,
@@ -359,6 +361,7 @@ async function seedIfEmpty() {
   await migrateFinanceStoreDiscountColumn();
   await migrateChatMessageReadColumns();
   await migrateMySQLTableCollations();
+  await migrateBackupConfigTable();
   const captainCount = Number((await queryOne('SELECT COUNT(*) as c FROM captains')).c);
   if (captainCount === 0) {
     const captains = [
@@ -1212,6 +1215,48 @@ app.put('/api/customers/:id', async (req, res) => {
   }
 });
 
+app.get('/api/backup/config', async (_, res) => {
+  try {
+    res.json(await backup.getBackupConfig());
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.put('/api/backup/config', async (req, res) => {
+  try {
+    res.json(await backup.saveBackupConfig(req.body || {}));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.get('/api/backup/history', async (req, res) => {
+  try {
+    res.json(await backup.listBackupHistory(req.query.limit));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/backup/run-now', async (_, res) => {
+  try {
+    res.json(await backup.runBackup({ force: true }));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.get('/api/backup/download/:fileName', async (req, res) => {
+  try {
+    const config = await backup.getBackupConfig();
+    const fullPath = backup.resolveBackupFile(config, req.params.fileName);
+    res.download(fullPath, path.basename(fullPath));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 app.get('/api/orders', async (req, res) => {
   res.json(await orders.listOrders({
     status: req.query.status,
@@ -1678,6 +1723,7 @@ app.delete('/api/attendance/override', async (req, res) => {
 
 async function processScheduledMessages() {
   await shiftReminder.processShiftReminders().catch(err => console.error('Shift reminder error:', err));
+  await backup.processScheduledBackup().catch(err => console.error('Backup error:', err));
 
   const now = new Date();
   const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;

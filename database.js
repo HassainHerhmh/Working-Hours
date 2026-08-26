@@ -355,6 +355,40 @@ export async function migrateShiftPeriodColumns() {
   `);
 }
 
+export async function migrateBackupConfigTable() {
+  if (isMySQL) {
+    await execute(`
+      CREATE TABLE IF NOT EXISTS backup_config (
+        id INT PRIMARY KEY DEFAULT 1,
+        backup_path VARCHAR(1000) NOT NULL DEFAULT './backups',
+        backup_time VARCHAR(5) NOT NULL DEFAULT '21:00',
+        is_active TINYINT DEFAULT 1,
+        retention_days INT NOT NULL DEFAULT 30,
+        last_backup_date VARCHAR(10) NULL,
+        last_backup_at TIMESTAMP NULL,
+        last_backup_file VARCHAR(500) NULL,
+        last_backup_status VARCHAR(30) NULL,
+        last_backup_error TEXT NULL
+      )
+    `);
+  } else {
+    sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS backup_config (
+        id INTEGER PRIMARY KEY DEFAULT 1,
+        backup_path TEXT NOT NULL DEFAULT './backups',
+        backup_time TEXT NOT NULL DEFAULT '21:00',
+        is_active INTEGER DEFAULT 1,
+        retention_days INTEGER NOT NULL DEFAULT 30,
+        last_backup_date TEXT,
+        last_backup_at TEXT,
+        last_backup_file TEXT,
+        last_backup_status TEXT,
+        last_backup_error TEXT
+      )
+    `);
+  }
+}
+
 export async function migrateShiftReminderTable() {
   const sql = `
     CREATE TABLE IF NOT EXISTS shift_reminder_config (
