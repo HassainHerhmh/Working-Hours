@@ -9,6 +9,30 @@ import { getYemenNow } from './shiftReminder.service.js';
 const gzip = promisify(zlib.gzip);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BACKEND_ROOT = __dirname;
+const IS_WIN32 = process.platform === 'win32';
+
+function getWindowsDrives() {
+  if (!IS_WIN32) return [];
+  const drives = [];
+  for (let code = 65; code <= 90; code += 1) {
+    const letter = String.fromCharCode(code);
+    const drivePath = `${letter}:\\`;
+    try {
+      fs.accessSync(drivePath);
+      drives.push({
+        name: `${letter}:\\`,
+        label: `القرص المحلي (${letter}:)`,
+        type: 'directory',
+        path: drivePath,
+        stored_path: drivePath,
+        size_bytes: null,
+      });
+    } catch {
+      // drive not available
+    }
+  }
+  return drives;
+}
 
 function yemenDateKey(d = getYemenNow()) {
   const y = d.getFullYear();
@@ -46,6 +70,13 @@ export function resolveBackupDirectory(configPath) {
 }
 
 function getAllowedBrowseRoots() {
+  if (IS_WIN32) {
+    return getWindowsDrives().map((drive) => ({
+      label: drive.label,
+      path: drive.path,
+    }));
+  }
+
   const roots = [
     { label: 'مجلد التطبيق', path: path.resolve(BACKEND_ROOT) },
     { label: 'المجلد الأب', path: path.resolve(BACKEND_ROOT, '..') },
@@ -61,6 +92,19 @@ function getAllowedBrowseRoots() {
 
 function isPathAllowed(targetPath) {
   const resolved = path.resolve(String(targetPath || ''));
+
+  if (IS_WIN32) {
+    const driveMatch = resolved.match(/^([A-Za-z]):(?:\\|$)/);
+    if (driveMatch) {
+      try {
+        fs.accessSync(`${driveMatch[1]}:\\`);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  }
+
   return getAllowedBrowseRoots().some((root) => {
     const normalizedRoot = path.resolve(root.path);
     return resolved === normalizedRoot || resolved.startsWith(`${normalizedRoot}${path.sep}`);
@@ -77,13 +121,40 @@ export function toStoredBackupPath(absolutePath) {
 }
 
 export async function browseBackupDirectory(inputPath = '') {
-  const fallback = resolveBackupDirectory('./backups');
-  let target = fallback;
+  const trimmed = String(inputPath || '').trim();
 
-  if (inputPath) {
-    target = path.isAbsolute(String(inputPath))
-      ? path.normalize(String(inputPath))
-      : resolveBackupDirectory(String(inputPath));
+  if (IS_WIN32 && (!trimmed || trimmed === '__drives__')) {
+    const drives = getWindowsDrives();
+    return {
+      current_path: '',
+      stored_path: '',
+      parent_path: null,
+      parent_stored_path: null,
+      is_drive_root: true,
+      platform: 'win32',
+      roots: drives.map((drive) => ({
+        label: drive.label,
+        path: drive.path,
+        stored_path: drive.stored_path,
+      })),
+      can_create_folder: false,
+      entries: drives,
+    };
+  }
+
+  const fallback = IS_WIN32 ? '' : resolveBackupDirectory('./backups');
+  let target = fallback || resolveBackupDirectory('./backups');
+
+  if (trimmed) {
+    target = path.isAbsolute(trimmed)
+      ? path.normalize(trimmed)
+      : resolveBackupDirectory(trimmed);
+  } else if (!IS_WIN32) {
+    target = resolveBackupDirectory('./backups');
+  }
+
+  if (!target) {
+    return browseBackupDirectory('__drives__');
   }
 
   if (!isPathAllowed(target)) {
@@ -131,10 +202,12 @@ export async function browseBackupDirectory(inputPath = '') {
   return {
     current_path: target,
     stored_path: toStoredBackupPath(target),
-    parent_path: parentPath !== target && isPathAllowed(parentPath) ? parentPath : null,
+    parent_path: parentPath !== target && isPathAllowed(parentPath) ? parentPath : (IS_WIN32 ? '__drives__' : null),
     parent_stored_path: parentPath !== target && isPathAllowed(parentPath)
       ? toStoredBackupPath(parentPath)
-      : null,
+      : (IS_WIN32 ? '__drives__' : null),
+    is_drive_root: false,
+    platform: IS_WIN32 ? 'win32' : 'linux',
     roots: getAllowedBrowseRoots().map((root) => ({
       ...root,
       stored_path: toStoredBackupPath(root.path),
