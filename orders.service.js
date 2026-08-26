@@ -79,6 +79,15 @@ function str(v) {
   return String(v || '').trim();
 }
 
+function hasField(obj, key) {
+  return Object.prototype.hasOwnProperty.call(obj || {}, key);
+}
+
+function fieldFromPayload(payload, key, fallback = '') {
+  if (hasField(payload, key)) return str(payload[key]);
+  return fallback == null ? '' : String(fallback);
+}
+
 const ORDER_STATUSES = ['new', 'assigned', 'in_progress', 'on_delivery', 'done', 'cancelled'];
 const PAYMENT_TYPES = ['cash', 'transfer', 'credit'];
 
@@ -172,8 +181,8 @@ async function upsertCustomer(payload) {
     [
       customerName,
       customerPhone || customer.phone || '',
-      addressText || customer.address_text || '',
-      mapLink || customer.map_link || '',
+      hasField(payload, 'address_text') ? str(payload.address_text) : (customer.address_text || ''),
+      hasField(payload, 'map_link') ? str(payload.map_link) : (customer.map_link || ''),
       customer.id,
     ]
   );
@@ -275,6 +284,28 @@ export async function listCustomers(queryText = '', { limit = 500 } = {}) {
   return rows;
 }
 
+export async function updateCustomer(customerId, payload = {}) {
+  const existing = await queryOne('SELECT * FROM customers WHERE id = ?', [customerId]);
+  if (!existing) throw new Error('العميل غير موجود');
+
+  const name = str(payload.name) || existing.name;
+  if (!name) throw new Error('اسم العميل مطلوب');
+
+  const phone = hasField(payload, 'phone') ? str(payload.phone) : (existing.phone || '');
+  const addressText = hasField(payload, 'address_text') ? str(payload.address_text) : (existing.address_text || '');
+  const mapLink = hasField(payload, 'map_link') ? str(payload.map_link) : (existing.map_link || '');
+  const updatedAt = isMySQL ? 'NOW()' : "datetime('now')";
+
+  await execute(
+    `UPDATE customers
+     SET name = ?, phone = ?, address_text = ?, map_link = ?, updated_at = ${updatedAt}
+     WHERE id = ?`,
+    [name, phone, addressText, mapLink, customerId]
+  );
+
+  return queryOne('SELECT * FROM customers WHERE id = ?', [customerId]);
+}
+
 export async function listOrders({ status, period, date } = {}) {
   let params = [];
   let where = '';
@@ -347,8 +378,8 @@ export async function createOrder(payload) {
   if (!validItems.length) throw new Error('أدخل تفاصيل الطلب');
 
   const orderId = uuid();
-  const orderAddress = str(payload.address_text) || customer.address_text || '';
-  const orderMap = str(payload.map_link) || customer.map_link || '';
+  const orderAddress = fieldFromPayload(payload, 'address_text', customer.address_text || '');
+  const orderMap = fieldFromPayload(payload, 'map_link', customer.map_link || '');
   const { userId, userName: rawUserName } = orderUserFields(payload);
   const userName = rawUserName || 'مستخدم';
   await execute(
@@ -408,10 +439,10 @@ export async function updateOrder(orderId, payload) {
   const customer = await upsertCustomer({
     name: customerName,
     phone: customerPhone,
-    address_text: str(payload.address_text) || existing.address_text,
-    map_link: str(payload.map_link) || existing.map_link,
   });
 
+  const orderAddress = fieldFromPayload(payload, 'address_text', existing.address_text || '');
+  const orderMap = fieldFromPayload(payload, 'map_link', existing.map_link || '');
   const detailsRows = Array.isArray(payload.items) ? payload.items : null;
   const updatedAt = isMySQL ? 'NOW()' : "datetime('now')";
   const { userId, userName: rawUserName } = orderUserFields(payload);
@@ -429,8 +460,8 @@ export async function updateOrder(orderId, payload) {
       customer.id,
       customer.name,
       customer.phone || '',
-      str(payload.address_text) || customer.address_text || '',
-      str(payload.map_link) || customer.map_link || '',
+      orderAddress,
+      orderMap,
       payload.delivery_fee !== undefined ? num(payload.delivery_fee) : num(existing.delivery_fee),
       nextCaptainId,
       nextStatus,
@@ -467,7 +498,7 @@ export async function updateOrder(orderId, payload) {
   if (nextCaptainId && nextCaptainId !== prevCaptainId) {
     await notifyCaptainOrderAssigned(nextCaptainId, {
       customerName: customer.name,
-      addressText: str(payload.address_text) || customer.address_text || existing.address_text || '',
+      addressText: orderAddress,
     });
   }
 

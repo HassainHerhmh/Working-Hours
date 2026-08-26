@@ -1196,6 +1196,22 @@ app.get('/api/orders/customers', async (req, res) => {
   res.json(await orders.listCustomers(req.query.q || ''));
 });
 
+app.get('/api/customers', async (req, res) => {
+  try {
+    res.json(await orders.listCustomers(req.query.q || '', { limit: req.query.limit }));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.put('/api/customers/:id', async (req, res) => {
+  try {
+    res.json(await orders.updateCustomer(req.params.id, req.body || {}));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 app.get('/api/orders', async (req, res) => {
   res.json(await orders.listOrders({
     status: req.query.status,
