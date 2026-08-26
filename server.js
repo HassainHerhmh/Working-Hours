@@ -1215,6 +1215,23 @@ app.put('/api/customers/:id', async (req, res) => {
   }
 });
 
+app.get('/api/backup/browse', async (req, res) => {
+  try {
+    res.json(await backup.browseBackupDirectory(req.query.path || ''));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/backup/browse/mkdir', async (req, res) => {
+  try {
+    const { parent_path, folder_name } = req.body || {};
+    res.json(await backup.createBackupFolder(parent_path, folder_name));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 app.get('/api/backup/config', async (_, res) => {
   try {
     res.json(await backup.getBackupConfig());

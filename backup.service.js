@@ -45,6 +45,126 @@ export function resolveBackupDirectory(configPath) {
   return resolved;
 }
 
+function getAllowedBrowseRoots() {
+  const roots = [
+    { label: 'مجلد التطبيق', path: path.resolve(BACKEND_ROOT) },
+    { label: 'المجلد الأب', path: path.resolve(BACKEND_ROOT, '..') },
+  ];
+  const seen = new Set();
+  return roots.filter((root) => {
+    const key = root.path;
+    if (seen.has(key) || !fs.existsSync(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function isPathAllowed(targetPath) {
+  const resolved = path.resolve(String(targetPath || ''));
+  return getAllowedBrowseRoots().some((root) => {
+    const normalizedRoot = path.resolve(root.path);
+    return resolved === normalizedRoot || resolved.startsWith(`${normalizedRoot}${path.sep}`);
+  });
+}
+
+export function toStoredBackupPath(absolutePath) {
+  const resolved = path.resolve(String(absolutePath || ''));
+  const relative = path.relative(BACKEND_ROOT, resolved);
+  if (relative && !relative.startsWith('..') && !path.isAbsolute(relative)) {
+    return `./${relative.replace(/\\/g, '/')}`;
+  }
+  return resolved.replace(/\\/g, '/');
+}
+
+export async function browseBackupDirectory(inputPath = '') {
+  const fallback = resolveBackupDirectory('./backups');
+  let target = fallback;
+
+  if (inputPath) {
+    target = path.isAbsolute(String(inputPath))
+      ? path.normalize(String(inputPath))
+      : resolveBackupDirectory(String(inputPath));
+  }
+
+  if (!isPathAllowed(target)) {
+    throw new Error('المسار غير مسموح');
+  }
+
+  let stat = null;
+  try {
+    stat = await fs.promises.stat(target);
+  } catch {
+    throw new Error('المجلد غير موجود');
+  }
+  if (!stat.isDirectory()) {
+    throw new Error('المسار المحدد ليس مجلداً');
+  }
+
+  const entries = [];
+  const dirEntries = await fs.promises.readdir(target, { withFileTypes: true });
+  for (const entry of dirEntries) {
+    if (entry.name === '.' || entry.name === '..') continue;
+    const fullPath = path.join(target, entry.name);
+    if (!isPathAllowed(fullPath)) continue;
+    try {
+      const entryStat = await fs.promises.stat(fullPath);
+      entries.push({
+        name: entry.name,
+        type: entryStat.isDirectory() ? 'directory' : 'file',
+        path: fullPath,
+        stored_path: toStoredBackupPath(fullPath),
+        size_bytes: entryStat.isFile() ? entryStat.size : null,
+      });
+    } catch {
+      // skip unreadable entries
+    }
+  }
+
+  entries.sort((a, b) => {
+    if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
+    return a.name.localeCompare(b.name, 'ar');
+  });
+
+  const parentPath = path.dirname(target);
+  const canCreateFolder = fs.existsSync(target);
+
+  return {
+    current_path: target,
+    stored_path: toStoredBackupPath(target),
+    parent_path: parentPath !== target && isPathAllowed(parentPath) ? parentPath : null,
+    parent_stored_path: parentPath !== target && isPathAllowed(parentPath)
+      ? toStoredBackupPath(parentPath)
+      : null,
+    roots: getAllowedBrowseRoots().map((root) => ({
+      ...root,
+      stored_path: toStoredBackupPath(root.path),
+    })),
+    can_create_folder: canCreateFolder,
+    entries,
+  };
+}
+
+export async function createBackupFolder(parentPath, folderName) {
+  const parent = path.isAbsolute(String(parentPath))
+    ? path.normalize(String(parentPath))
+    : resolveBackupDirectory(String(parentPath));
+
+  if (!isPathAllowed(parent)) {
+    throw new Error('المسار غير مسموح');
+  }
+
+  const safeName = String(folderName || '').trim().replace(/[\\/:*?"<>|]/g, '');
+  if (!safeName) throw new Error('اسم المجلد مطلوب');
+
+  const target = path.join(parent, safeName);
+  if (!isPathAllowed(target)) {
+    throw new Error('لا يمكن إنشاء المجلد في هذا المسار');
+  }
+
+  await fs.promises.mkdir(target, { recursive: true });
+  return browseBackupDirectory(target);
+}
+
 async function listTableNames() {
   if (isMySQL) {
     const rows = await queryAll('SHOW TABLES');
