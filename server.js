@@ -90,11 +90,15 @@ function resolveCorsOrigin(origin) {
   return true;
 }
 
+
 app.use(cors({
-  origin: (origin, callback) => callback(null, resolveCorsOrigin(origin)),
+  origin: true,
   methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Branch-Id'],
+  optionsSuccessStatus: 204,
 }));
+
+app.options(/.*/, cors());
 app.use(express.json());
 app.use('/uploads', express.static(uploadsDir));
 
