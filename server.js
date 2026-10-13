@@ -23,6 +23,7 @@ import {
   migrateFinanceDiscountsTable,
   migrateFinanceTables,
   migrateOrdersTables,
+  migrateOrderBusinessDateColumn,
   migrateOrdersUserColumns,
   migrateOrdersPaymentTypeColumn,
   migrateOrdersStatusTimestamps,
@@ -336,6 +337,7 @@ async function seedIfEmpty() {
   await migrateFinanceDiscountsTable();
   await migrateFinanceTables();
   await migrateOrdersTables();
+  await migrateOrderBusinessDateColumn();
   await migrateOrdersUserColumns();
   await migrateOrdersPaymentTypeColumn();
   await migrateOrdersStatusTimestamps();

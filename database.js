@@ -598,6 +598,20 @@ export async function migrateOrdersTables() {
   }
 }
 
+export async function migrateOrderBusinessDateColumn() {
+  if (isMySQL) {
+    const cols = await queryAll("SHOW COLUMNS FROM orders LIKE 'business_date'");
+    if (!cols.length) {
+      await execute('ALTER TABLE orders ADD COLUMN business_date DATE NULL');
+    }
+  } else {
+    const cols = sqlite.prepare('PRAGMA table_info(orders)').all();
+    if (!cols.some(c => c.name === 'business_date')) {
+      sqlite.exec('ALTER TABLE orders ADD COLUMN business_date TEXT');
+    }
+  }
+}
+
 export async function migrateOrdersUserColumns() {
   const columns = [
     { name: 'created_by_user_id', mysql: 'VARCHAR(36) NULL', sqlite: 'TEXT' },

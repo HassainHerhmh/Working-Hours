@@ -11,6 +11,7 @@ function num(v) {
 function toDateKey(value) {
   if (!value) return '';
   const raw = String(value);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
   const d = new Date(raw.includes('T') ? raw : raw.replace(' ', 'T'));
   if (Number.isNaN(d.getTime())) return raw.slice(0, 10);
   return yemenDateKey(d);
@@ -18,7 +19,7 @@ function toDateKey(value) {
 
 /** تاريخ عمل الطلب = يوم إنشاء الطلب (وليس يوم الإكمال) */
 function orderBusinessDateRaw(order) {
-  return order?.created_at || order?.done_at || order?.updated_at || null;
+  return order?.business_date || order?.created_at || order?.done_at || order?.updated_at || null;
 }
 
 function orderBusinessDateKey(order) {
@@ -533,7 +534,7 @@ function orderTransfersDebtsAmount(order, invoiceTotal = null, externalTotal = n
 async function getPostedOrderItemsForCaptain(captainId) {
   return queryAll(
     `SELECT oi.order_id, oi.store_id, oi.store_name, oi.invoice_amount, oi.is_external,
-      o.payment_type, o.delivery_fee, o.created_at, o.done_at, o.updated_at
+      o.payment_type, o.delivery_fee, o.business_date, o.created_at, o.done_at, o.updated_at
      FROM order_items oi
      INNER JOIN \`orders\` o ON o.id = oi.order_id
      WHERE o.captain_id = ? AND o.status = 'done' AND o.finance_posted_at IS NOT NULL`,
@@ -558,7 +559,7 @@ function summarizePostedOrder(order, items, discountsList) {
 
 async function getPostedDoneOrdersWithTotals(captainId) {
   return queryAll(
-    `SELECT o.id, o.payment_type, o.delivery_fee, o.created_at, o.done_at, o.updated_at,
+    `SELECT o.id, o.payment_type, o.delivery_fee, o.business_date, o.created_at, o.done_at, o.updated_at,
       (SELECT COALESCE(SUM(CASE WHEN is_external = 0 THEN invoice_amount ELSE 0 END), 0) FROM order_items WHERE order_id = o.id) AS invoice_total,
       (SELECT COALESCE(SUM(CASE WHEN is_external = 1 THEN invoice_amount ELSE 0 END), 0) FROM order_items WHERE order_id = o.id) AS external_total
      FROM \`orders\` o
@@ -594,7 +595,7 @@ async function computeTransfersDebtsFromOrders(captainId, salesDate) {
 async function computeStoreInvoiceLinesFromOrders(captainId, salesDate) {
   const rows = await queryAll(
     `SELECT oi.order_id, oi.store_id, oi.invoice_amount, oi.is_external,
-      o.created_at, o.done_at, o.updated_at
+      o.business_date, o.created_at, o.done_at, o.updated_at
      FROM order_items oi
      INNER JOIN \`orders\` o ON o.id = oi.order_id
      WHERE o.captain_id = ? AND o.status = 'done' AND o.finance_posted_at IS NOT NULL
@@ -895,7 +896,7 @@ export async function deleteInvoicePosting(postingId) {
   const captainId = posting.captain_id;
 
   const orders = await queryAll(
-    `SELECT id, delivery_fee, created_at, done_at, updated_at
+    `SELECT id, delivery_fee, business_date, created_at, done_at, updated_at
      FROM \`orders\`
      WHERE captain_id = ? AND status = 'done' AND finance_posted_at IS NOT NULL`,
     [captainId]
@@ -1545,7 +1546,7 @@ export async function getCaptainAccountStatement({
   );
 
   const postedOrdersForRange = await queryAll(
-    `SELECT created_at, done_at, updated_at
+    `SELECT business_date, created_at, done_at, updated_at
      FROM \`orders\`
      WHERE captain_id = ? AND status = 'done' AND finance_posted_at IS NOT NULL`,
     [captain_id]
@@ -1755,7 +1756,7 @@ export async function getCaptainAccountStatement({
   } else {
     const transfersDebtsByDate = new Map();
     const ordersForTransfers = await queryAll(
-      `SELECT o.id, o.payment_type, o.delivery_fee, o.created_at, o.done_at, o.updated_at
+      `SELECT o.id, o.payment_type, o.delivery_fee, o.business_date, o.created_at, o.done_at, o.updated_at
        FROM \`orders\` o
        WHERE o.captain_id = ? AND o.status = 'done' AND o.finance_posted_at IS NOT NULL`,
       [captain_id]
@@ -2148,7 +2149,7 @@ export async function getCreditTransferReport({
   const placeholders = inRange.map(() => '?').join(', ');
   const itemRows = await queryAll(
     `SELECT oi.order_id, oi.store_id, oi.store_name, oi.invoice_amount, oi.is_external,
-            o.payment_type, o.delivery_fee, o.created_at, o.done_at, o.updated_at
+            o.payment_type, o.delivery_fee, o.business_date, o.created_at, o.done_at, o.updated_at
      FROM order_items oi
      INNER JOIN \`orders\` o ON o.id = oi.order_id
      WHERE oi.order_id IN (${placeholders})`,

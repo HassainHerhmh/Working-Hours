@@ -13,9 +13,9 @@ function shiftDateKey(dateKey, days) {
 
 function orderCreatedDateSql(column = 'o.created_at') {
   if (isMySQL) {
-    return `DATE(CONVERT_TZ(${column}, '+00:00', '+03:00'))`;
+    return `COALESCE(o.business_date, DATE(CONVERT_TZ(${column}, '+00:00', '+03:00')))`;
   }
-  return `date(${column}, '+3 hours')`;
+  return `COALESCE(o.business_date, date(${column}, '+3 hours'))`;
 }
 
 function appendOrderDateFilter(where, params, { period, date } = {}) {
@@ -109,12 +109,26 @@ function normalizePaymentType(v) {
 }
 
 function toOrderSalesDate(order) {
-  const raw = order?.created_at || order?.done_at || order?.updated_at;
+  const raw = order?.business_date || order?.created_at || order?.done_at || order?.updated_at;
   if (!raw) return '';
   const value = String(raw);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
   const d = new Date(value.includes('T') ? value : value.replace(' ', 'T'));
   if (Number.isNaN(d.getTime())) return value.slice(0, 10);
   return yemenDateKey(d);
+}
+
+function normalizeBusinessDate(value) {
+  const date = str(value);
+  if (!date) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw new Error('تاريخ الطلب غير صالح');
+  }
+  const parsed = new Date(`${date}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) {
+    throw new Error('تاريخ الطلب غير صالح');
+  }
+  return date;
 }
 
 const EXTERNAL_STORE_NAME = 'طلب خارجي';
@@ -194,7 +208,7 @@ async function attachItems(orders) {
   const placeholders = orders.map(() => '?').join(', ');
   const rows = await queryAll(
     `SELECT oi.*, s.name AS finance_store_name,
-            o.done_at, o.updated_at, o.created_at
+           o.done_at, o.updated_at, o.created_at, o.business_date
      FROM order_items oi
      LEFT JOIN finance_stores s ON s.id = oi.store_id
      INNER JOIN \`orders\` o ON o.id = oi.order_id
@@ -208,7 +222,7 @@ async function attachItems(orders) {
   for (const row of rows) {
     const current = map.get(row.order_id) || [];
     const isExternal = Boolean(row.is_external);
-    const orderDate = row.created_at || row.done_at || row.updated_at;
+    const orderDate = row.business_date || row.created_at || row.done_at || row.updated_at;
     if (!orderDiscountCache.has(row.order_id)) {
       orderDiscountCache.set(row.order_id, pickDiscountsForDate(discountsList, orderDate));
     }
@@ -253,7 +267,7 @@ async function attachItems(orders) {
   }
   return orders.map((order) => {
     const items = map.get(order.id) || [];
-    const orderDate = order.created_at || order.done_at || order.updated_at;
+    const orderDate = order.business_date || order.created_at || order.done_at || order.updated_at;
     const { deliveryPercent } = orderDiscountCache.get(order.id)
       || pickDiscountsForDate(discountsList, orderDate);
     const pricing = summarizeOrderPricing(items, order.delivery_fee, deliveryPercent);
@@ -374,6 +388,7 @@ async function notifyCaptainOrderAssigned(captainId, { customerName, addressText
 }
 
 export async function createOrder(payload) {
+  const businessDate = normalizeBusinessDate(payload.business_date);
   const customer = await upsertCustomer(payload);
   const detailsRows = Array.isArray(payload.items) ? payload.items : [];
   const validItems = detailsRows
@@ -388,9 +403,9 @@ export async function createOrder(payload) {
   const userName = rawUserName || 'مستخدم';
   await execute(
     `INSERT INTO \`orders\`
-      (id, customer_id, customer_name, customer_phone, address_text, map_link, delivery_fee, captain_id, status, payment_type,
+      (id, customer_id, customer_name, customer_phone, address_text, map_link, delivery_fee, captain_id, status, payment_type, business_date,
        created_by_user_id, created_by_user_name, updated_by_user_id, updated_by_user_name)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       orderId,
       customer.id,
@@ -402,6 +417,7 @@ export async function createOrder(payload) {
       payload.captain_id || null,
       normalizeStatus(payload.status || 'new'),
       normalizePaymentType(payload.payment_type),
+      businessDate,
       userId,
       userName,
       userId,
