@@ -388,6 +388,12 @@ async function notifyCaptainOrderAssigned(captainId, { customerName, addressText
 }
 
 export async function createOrder(payload) {
+  const requestedStatus = normalizeStatus(payload.status || 'new');
+  const requestedCaptainId = payload.captain_id || null;
+  if (requestedStatus === 'done' && !requestedCaptainId) {
+    throw new Error('يجب تحديد الكابتن قبل إكمال الطلب');
+  }
+
   const businessDate = normalizeBusinessDate(payload.business_date);
   const customer = await upsertCustomer(payload);
   const detailsRows = Array.isArray(payload.items) ? payload.items : [];
@@ -414,8 +420,8 @@ export async function createOrder(payload) {
       orderAddress,
       orderMap,
       num(payload.delivery_fee),
-      payload.captain_id || null,
-      normalizeStatus(payload.status || 'new'),
+      requestedCaptainId,
+      requestedStatus,
       normalizePaymentType(payload.payment_type),
       businessDate,
       userId,
@@ -425,7 +431,7 @@ export async function createOrder(payload) {
     ]
   );
 
-  await touchStatusTimestamp(orderId, normalizeStatus(payload.status || 'new'), {});
+  await touchStatusTimestamp(orderId, requestedStatus, {});
 
   for (const item of validItems) {
     const storeName = item.is_external
@@ -470,6 +476,15 @@ export async function updateOrder(orderId, payload) {
   const nextStatus = payload.status ? normalizeStatus(payload.status) : normalizeStatus(existing.status);
   const prevCaptainId = existing.captain_id || null;
   const nextCaptainId = payload.captain_id !== undefined ? (payload.captain_id || null) : prevCaptainId;
+
+  if (nextStatus === 'done' && !nextCaptainId) {
+    throw new Error('يجب تحديد الكابتن قبل إكمال الطلب');
+  }
+  if (normalizeStatus(existing.status) === 'done' && existing.finance_posted_at
+      && nextCaptainId !== prevCaptainId) {
+    throw new Error('لا يمكن تغيير الكابتن بعد ترحيل الفاتورة المالية');
+  }
+
   await execute(
     `UPDATE \`orders\`
      SET customer_id = ?, customer_name = ?, customer_phone = ?, address_text = ?, map_link = ?,
@@ -525,20 +540,15 @@ export async function updateOrder(orderId, payload) {
   const rows = await listOrders({});
   const updated = rows.find(r => r.id === orderId) || null;
 
-  if (
-    nextStatus === 'done'
-    && normalizeStatus(existing.status) !== 'done'
-    && updated?.captain_id
-  ) {
+  // ترحيل أي طلب مكتمل لم يسبق ترحيله، بما في ذلك الطلبات القديمة
+  // التي أُكملت أولاً ثم عُيّن لها كابتن لاحقاً.
+  if (nextStatus === 'done' && nextCaptainId && !existing.finance_posted_at) {
     const full = await queryOne('SELECT * FROM `orders` WHERE id = ?', [orderId]);
     const [enriched] = await attachItems([full]);
     await postCompletedOrderFinance(enriched);
   } else if (existing.finance_posted_at && normalizeStatus(existing.status) === 'done') {
     if (existing.captain_id) {
       await reconcileCaptainDayFinance(existing.captain_id, toOrderSalesDate(existing));
-    }
-    if (nextCaptainId && nextCaptainId !== prevCaptainId) {
-      await reconcileCaptainDayFinance(nextCaptainId, toOrderSalesDate(existing));
     }
   }
 
