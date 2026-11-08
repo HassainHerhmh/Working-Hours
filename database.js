@@ -1211,6 +1211,24 @@ export async function migrateCaptainUsernameColumn() {
   }
 }
 
+export async function migrateCaptainVisibilityColumn() {
+  if (isMySQL) {
+    const cols = await queryAll("SHOW COLUMNS FROM captains LIKE 'is_visible'");
+    if (!cols.length) {
+      await execute(
+        'ALTER TABLE captains ADD COLUMN is_visible TINYINT(1) NOT NULL DEFAULT 1'
+      );
+    }
+  } else {
+    const cols = sqlite.prepare('PRAGMA table_info(captains)').all();
+    if (!cols.some(c => c.name === 'is_visible')) {
+      sqlite.exec(
+        'ALTER TABLE captains ADD COLUMN is_visible INTEGER NOT NULL DEFAULT 1'
+      );
+    }
+  }
+}
+
 export async function migrateOrderInvoiceAttachmentsTable() {
   if (isMySQL) {
     const exists = await queryOne(
