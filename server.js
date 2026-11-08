@@ -16,6 +16,7 @@ import {
   nowExpr,
   migrateCaptainPasswordColumn,
   migrateCaptainUsernameColumn,
+  migrateCaptainVisibilityColumn,
   migrateShiftPeriodColumns,
   migrateShiftReminderTable,
   migrateAttendanceTable,
@@ -330,6 +331,7 @@ async function ensureCaptainPasswords() {
 async function seedIfEmpty() {
   await migrateCaptainPasswordColumn();
   await migrateCaptainUsernameColumn();
+  await migrateCaptainVisibilityColumn();
   await migrateShiftPeriodColumns();
   await migrateShiftReminderTable();
   await migrateAttendanceTable();
@@ -566,6 +568,31 @@ app.get('/api/captains', async (_, res) => {
     group_name: captain.group_name || '',
     balance: Number(balances[captain.id] || 0),
   })));
+});
+
+app.patch('/api/captains/:id/visibility', async (req, res) => {
+  const captain = await queryOne(
+    'SELECT id, is_visible FROM captains WHERE id = ?',
+    [req.params.id]
+  );
+
+  if (!captain) {
+    return res.status(404).json({ error: 'الكابتن غير موجود' });
+  }
+
+  const nextVisibility = Number(captain.is_visible) === 0 ? 1 : 0;
+
+  await execute(
+    'UPDATE captains SET is_visible = ? WHERE id = ?',
+    [nextVisibility, req.params.id]
+  );
+
+  const updated = await queryOne(
+    'SELECT * FROM captains WHERE id = ?',
+    [req.params.id]
+  );
+
+  res.json(sanitizeCaptain(updated));
 });
 
 app.get('/api/captains/:id', async (req, res) => {
