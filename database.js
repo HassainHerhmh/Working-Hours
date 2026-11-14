@@ -229,7 +229,7 @@ async function connectMySQL() {
 export async function initDb() {
   if (isMySQL) {
     pool = await connectMySQL();
-    console.log('✅ MySQL connected (tables managed manually, schema creation skipped to avoid permissions error)');
+    console.log('✅ MySQL connected (tables managed manually, schema creation skipped)');
     return;
   }
 
@@ -241,7 +241,6 @@ export async function initDb() {
   sqlite.exec(SCHEMA_SQLITE);
   console.log('✅ SQLite connected —', dbPath);
 }
-
   const dbPath = path.join(__dirname, 'data', 'captain.db');
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   sqlite = new Database(dbPath);
