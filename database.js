@@ -229,13 +229,18 @@ async function connectMySQL() {
 export async function initDb() {
   if (isMySQL) {
     pool = await connectMySQL();
-    const statements = SCHEMA_MYSQL.split(';').map(s => s.trim()).filter(Boolean);
-    for (const stmt of statements) {
-      await pool.execute(stmt);
-    }
-    console.log('✅ MySQL tables ready');
+    console.log('✅ MySQL connected (tables managed manually, schema creation skipped to avoid permissions error)');
     return;
   }
+
+  const dbPath = path.join(__dirname, 'data', 'captain.db');
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  sqlite = new Database(dbPath);
+  sqlite.pragma('journal_mode = WAL');
+  sqlite.pragma('foreign_keys = ON');
+  sqlite.exec(SCHEMA_SQLITE);
+  console.log('✅ SQLite connected —', dbPath);
+}
 
   const dbPath = path.join(__dirname, 'data', 'captain.db');
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
