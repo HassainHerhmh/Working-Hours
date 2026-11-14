@@ -241,14 +241,6 @@ export async function initDb() {
   sqlite.exec(SCHEMA_SQLITE);
   console.log('✅ SQLite connected —', dbPath);
 }
-  const dbPath = path.join(__dirname, 'data', 'captain.db');
-  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-  sqlite = new Database(dbPath);
-  sqlite.pragma('journal_mode = WAL');
-  sqlite.pragma('foreign_keys = ON');
-  sqlite.exec(SCHEMA_SQLITE);
-  console.log('✅ SQLite connected —', dbPath);
-}
 
 /** تحويل ISO/Date إلى صيغة MySQL: YYYY-MM-DD HH:MM:SS */
 export function toDbDateTime(value) {
