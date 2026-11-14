@@ -372,6 +372,7 @@ async function seedIfEmpty()
   await migrateMySQLTableCollations();
   await migrateBackupConfigTable();
   */
+async function seedIfEmpty() {
   const captainCount = Number((await queryOne('SELECT COUNT(*) as c FROM captains')).c);
   if (captainCount === 0) {
     const captains = [
