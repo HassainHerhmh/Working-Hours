@@ -328,51 +328,52 @@ async function ensureCaptainPasswords() {
   }
 }
 
-async function seedIfEmpty() 
-/*
-  await migrateCaptainPasswordColumn();
-  await migrateCaptainUsernameColumn();
-  await migrateCaptainVisibilityColumn();
-  await migrateShiftPeriodColumns();
-  await migrateShiftReminderTable();
-  await migrateAttendanceTable();
-  await migrateCaptainGroupsAndAttendanceOverrides();
-  await migrateFinanceDiscountsTable();
-  await migrateFinanceTables();
-  await migrateOrdersTables();
-  await migrateOrderBusinessDateColumn();
-  await migrateOrdersUserColumns();
-  await migrateOrdersPaymentTypeColumn();
-  await migrateOrdersStatusTimestamps();
-  await migrateOrdersFinancePostedColumn();
-  await migrateOrderItemsInvoiceAmount();
-  await migrateOrderItemsExternalColumn();
-  await migrateFinanceVouchersTable();
-  await migrateFinanceInvoicePostingsTable();
-  await migrateFinanceInvoiceOrdersCountColumn();
-  await migrateFinanceInvoiceSalesDateColumn();
-  await migrateCaptainStoreInvoiceOrderLines();
-  await migrateFinanceInvoicePerDate();
-  await migrateFinanceCommissionPostingsTable();
-  await migrateFinanceCommissionSalesDateColumn();
-  await migrateFinanceCommissionPerDate();
-  await migrateFinanceVoucherDateColumn();
-  await migrateFinanceVoucherTransferColumns();
-  await migrateFixTransferVoucherTypes();
-  await migrateUsersPermissionsColumn();
-  await migrateOrderInvoiceAttachmentsTable();
-  await migrateOrderInvoiceAttachmentDataColumn();
-  await migrateChatMessagesTable();
-  await migrateChatMessageAttachmentColumns();
-  await migrateStoredMediaColumns();
-  await backfillOrderInvoiceAttachmentData();
-  await backfillStoredMediaData();
-  await migrateFinanceStoreDiscountColumn();
-  await migrateChatMessageReadColumns();
-  await migrateMySQLTableCollations();
-  await migrateBackupConfigTable();
-  */
 async function seedIfEmpty() {
+  /*
+    // تم إلغاء تفعيل دوال الـ Migration والإنشاء التلقائي لتجنب مشاكل الصلاحيات CREATE/ALTER
+    await migrateCaptainPasswordColumn();
+    await migrateCaptainUsernameColumn();
+    await migrateCaptainVisibilityColumn();
+    await migrateShiftPeriodColumns();
+    await migrateShiftReminderTable();
+    await migrateAttendanceTable();
+    await migrateCaptainGroupsAndAttendanceOverrides();
+    await migrateFinanceDiscountsTable();
+    await migrateFinanceTables();
+    await migrateOrdersTables();
+    await migrateOrderBusinessDateColumn();
+    await migrateOrdersUserColumns();
+    await migrateOrdersPaymentTypeColumn();
+    await migrateOrdersStatusTimestamps();
+    await migrateOrdersFinancePostedColumn();
+    await migrateOrderItemsInvoiceAmount();
+    await migrateOrderItemsExternalColumn();
+    await migrateFinanceVouchersTable();
+    await migrateFinanceInvoicePostingsTable();
+    await migrateFinanceInvoiceOrdersCountColumn();
+    await migrateFinanceInvoiceSalesDateColumn();
+    await migrateCaptainStoreInvoiceOrderLines();
+    await migrateFinanceInvoicePerDate();
+    await migrateFinanceCommissionPostingsTable();
+    await migrateFinanceCommissionSalesDateColumn();
+    await migrateFinanceCommissionPerDate();
+    await migrateFinanceVoucherDateColumn();
+    await migrateFinanceVoucherTransferColumns();
+    await migrateFixTransferVoucherTypes();
+    await migrateUsersPermissionsColumn();
+    await migrateOrderInvoiceAttachmentsTable();
+    await migrateOrderInvoiceAttachmentDataColumn();
+    await migrateChatMessagesTable();
+    await migrateChatMessageAttachmentColumns();
+    await migrateStoredMediaColumns();
+    await backfillOrderInvoiceAttachmentData();
+    await backfillStoredMediaData();
+    await migrateFinanceStoreDiscountColumn();
+    await migrateChatMessageReadColumns();
+    await migrateMySQLTableCollations();
+    await migrateBackupConfigTable();
+  */
+
   const captainCount = Number((await queryOne('SELECT COUNT(*) as c FROM captains')).c);
   if (captainCount === 0) {
     const captains = [
