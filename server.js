@@ -328,7 +328,8 @@ async function ensureCaptainPasswords() {
   }
 }
 
-async function seedIfEmpty() {
+async function seedIfEmpty() 
+/*
   await migrateCaptainPasswordColumn();
   await migrateCaptainUsernameColumn();
   await migrateCaptainVisibilityColumn();
@@ -370,6 +371,7 @@ async function seedIfEmpty() {
   await migrateChatMessageReadColumns();
   await migrateMySQLTableCollations();
   await migrateBackupConfigTable();
+  */
   const captainCount = Number((await queryOne('SELECT COUNT(*) as c FROM captains')).c);
   if (captainCount === 0) {
     const captains = [
